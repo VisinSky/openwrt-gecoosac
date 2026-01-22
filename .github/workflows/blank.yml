@@ -14,6 +14,7 @@ on:
         type: string
         default: ''
 
+# ========== 所有Job的根节点（以下每个Job必须同级缩进） ==========
 jobs:
   # ========== 第一阶段：按架构编译插件 ==========
   build-packages:
@@ -77,80 +78,80 @@ jobs:
             bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
             bin/packages/${{ matrix.arch }}/packages_ci/Packages*
 
- # ========== 第二阶段：汇总产物生成OPKG标准源 ==========
-aggregate-for-opkg:
-  name: Aggregate packages to opkg repo
-  runs-on: ubuntu-latest
-  needs: build-packages  # 依赖编译阶段完成
-  # 仅当编译阶段不失败时执行（允许部分架构跳过）
-  if: ${{ always() && needs.build-packages.result != 'failure' }}
-  
-  steps:
-    # 1. 创建opkg源基础目录
-    - name: Create base directory structure
-      run: mkdir -p ./opkg-repo/packages
+  # ========== 第二阶段：汇总产物生成OPKG标准源（关键：与build-packages同级缩进） ==========
+  aggregate-for-opkg:
+    name: Aggregate packages to opkg repo
+    runs-on: ubuntu-latest
+    needs: build-packages  # 依赖编译阶段完成
+    # 仅当编译阶段不失败时执行（允许部分架构跳过）
+    if: ${{ always() && needs.build-packages.result != 'failure' }}
+    
+    steps:
+      # 1. 创建opkg源基础目录
+      - name: Create base directory structure
+        run: mkdir -p ./opkg-repo/packages
 
-    # 2. 下载所有架构的编译产物
-    - name: Download all architecture artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: ./opkg-repo/tmp
-        merge-multiple: false
+      # 2. 下载所有架构的编译产物
+      - name: Download all architecture artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./opkg-repo/tmp
+          merge-multiple: false
 
-    # 3. 整理目录结构并生成OPKG索引文件（核心步骤，已修复ipkg-utils问题）
-    - name: Organize repo and generate opkg indexes
-      run: |
-        # 解决Ubuntu 24.04无ipkg-utils的问题：手动下载ipkg-make-index脚本
-        sudo apt-get update && sudo apt-get install -y wget perl
-        wget -O /usr/local/bin/ipkg-make-index https://raw.githubusercontent.com/openwrt/packages/master/utils/ipkg-utils/src/ipkg-make-index.pl
-        chmod +x /usr/local/bin/ipkg-make-index
-        
-        # 遍历所有架构目录
-        for arch_dir in ./opkg-repo/tmp/*; do
-          if [ -d "$arch_dir" ]; then
-            # 获取架构名称
-            arch=$(basename "$arch_dir")
-            # 创建架构专属目录
-            mkdir -p ./opkg-repo/packages/$arch
-            
-            # 移动ipk文件到对应目录（容错：无ipk时不报错）
-            mv $arch_dir/*.ipk ./opkg-repo/packages/$arch/ 2>/dev/null || true
-            
-            # 检查是否有ipk文件，有则生成索引
-            if ls ./opkg-repo/packages/$arch/*.ipk 1> /dev/null 2>&1; then
-              # 进入架构目录生成索引
-              cd ./opkg-repo/packages/$arch
-              # 生成Packages文件（opkg核心索引）
-              ipkg-make-index . > Packages
-              # 生成压缩版索引（opkg优先读取）
-              gzip -c Packages > Packages.gz
-              # 返回上级目录
-              cd -
+      # 3. 整理目录结构并生成OPKG索引文件（核心步骤，已修复ipkg-utils问题）
+      - name: Organize repo and generate opkg indexes
+        run: |
+          # 解决Ubuntu 24.04无ipkg-utils的问题：手动下载ipkg-make-index脚本
+          sudo apt-get update && sudo apt-get install -y wget perl
+          wget -O /usr/local/bin/ipkg-make-index https://raw.githubusercontent.com/openwrt/packages/master/utils/ipkg-utils/src/ipkg-make-index.pl
+          chmod +x /usr/local/bin/ipkg-make-index
+          
+          # 遍历所有架构目录
+          for arch_dir in ./opkg-repo/tmp/*; do
+            if [ -d "$arch_dir" ]; then
+              # 获取架构名称
+              arch=$(basename "$arch_dir")
+              # 创建架构专属目录
+              mkdir -p ./opkg-repo/packages/$arch
+              
+              # 移动ipk文件到对应目录（容错：无ipk时不报错）
+              mv $arch_dir/*.ipk ./opkg-repo/packages/$arch/ 2>/dev/null || true
+              
+              # 检查是否有ipk文件，有则生成索引（避免空目录生成无效索引）
+              if ls ./opkg-repo/packages/$arch/*.ipk 1> /dev/null 2>&1; then
+                # 进入架构目录生成索引
+                cd ./opkg-repo/packages/$arch
+                # 生成Packages文件（opkg核心索引）
+                ipkg-make-index . > Packages
+                # 生成压缩版索引（opkg优先读取）
+                gzip -c Packages > Packages.gz
+                # 返回上级目录
+                cd -
+              fi
             fi
-          fi
-        done
-      shell: /usr/bin/bash -e {0}
+          done
+        shell: /usr/bin/bash -e {0}
 
-    # 4. 上传完整的OPKG源作为工件
-    - name: Upload full opkg repository
-      uses: actions/upload-artifact@v4
-      with:
-        name: opkg-repository
-        path: ./opkg-repo
+      # 4. 上传完整的OPKG源作为工件
+      - name: Upload full opkg repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: opkg-repository
+          path: ./opkg-repo
 
-    # 5. 发布OPKG源到GitHub Release
-    - name: Publish opkg repo to release
-      uses: ncipollo/release-action@v1
-      with:
-        name: ${{ github.ref_name || 'Manual Build' }}
-        token: ${{ secrets.GITHUB_TOKEN }}
-        allowUpdates: true
-        replacesArtifacts: false  # 保留原有单个ipk，不覆盖
-        artifacts: |
-          ./opkg-repo/**/*
-          # 保留原有单个ipk的发布（兼容旧用法）
-          ./opkg-repo/tmp/*/*.ipk
-        tag: ${{ github.ref_name || 'manual-build' }}
-        body: |
-          ## 📦 OPKG源使用方法（无需区分架构）
-          1. 添加源到OpenWRT的/etc/opkg/customfeeds.conf：
+      # 5. 发布OPKG源到GitHub Release
+      - name: Publish opkg repo to release
+        uses: ncipollo/release-action@v1
+        with:
+          name: ${{ github.ref_name || 'Manual Build' }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
+          replacesArtifacts: false  # 保留原有单个ipk，不覆盖
+          artifacts: |
+            ./opkg-repo/**/*
+            # 保留原有单个ipk的发布（兼容旧用法）
+            ./opkg-repo/tmp/*/*.ipk
+          tag: ${{ github.ref_name || 'manual-build' }}
+          body: |
+            ## 📦 OPKG源使用方法（无需区分架构）
+            1. 添加源到OpenWRT的/etc/opkg/customfeeds.conf：
