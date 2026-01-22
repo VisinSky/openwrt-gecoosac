@@ -1,6 +1,5 @@
 name: 自动编译发布
 
-# 触发规则：标签推送 + 手动触发 + 上游同步后触发
 on:
   push:
     tags:
@@ -42,7 +41,7 @@ on:
           - 'mipsel_mips32'
           - 'x86_64'
   repository_dispatch:
-    types: [upstream_synced]  # 与sync-upstream.yml的触发类型一致
+    types: [upstream_synced]
 
 jobs:
   build:
@@ -85,8 +84,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 编译逻辑：适配不同触发方式
-      - name: 编译OpenWrt插件
+      - name: Building packages
         if: >-
           (github.event_name == 'workflow_dispatch' && (github.event.inputs.arch == 'all' || matrix.arch == github.event.inputs.arch)) ||
           (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
@@ -98,19 +96,32 @@ jobs:
           PACKAGES: luci-app-gecoosac
           NO_REFRESH_CHECK: true
 
-      # 上传编译产物到Action临时存储
-      - name: 上传编译产物
+      # 新增：创建统一目录，将当前架构的产物复制进去
+      - name: 整理多架构产物到统一目录
+        if: >-
+          (github.event_name == 'workflow_dispatch' && (github.event.inputs.arch == 'all' || matrix.arch == github.event.inputs.arch)) ||
+          (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+          (github.event_name == 'repository_dispatch' && github.event.action == 'upstream_synced')
+        run: |
+          # 创建统一目录（all-archs），子目录为架构名
+          mkdir -p bin/all-archs/${{ matrix.arch }}
+          # 复制ipk和Packages.gz到统一目录
+          cp bin/packages/${{ matrix.arch }}/packages_ci/*.ipk bin/all-archs/${{ matrix.arch }}/
+          cp bin/packages/${{ matrix.arch }}/packages_ci/Packages.gz bin/all-archs/${{ matrix.arch }}/
+
+      # 上传整理后的产物（统一目录）
+      - name: Upload artifacts
         if: >-
           (github.event_name == 'workflow_dispatch' && (github.event.inputs.arch == 'all' || matrix.arch == github.event.inputs.arch)) ||
           (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
           (github.event_name == 'repository_dispatch' && github.event.action == 'upstream_synced')
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.arch }}
-          path: bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
+          name: all-archs-${{ matrix.arch }}
+          path: bin/all-archs/
 
-      # 发布编译产物到GitHub Release
-      - name: 发布产物到Release
+      # 发布统一目录的所有产物到Release
+      - name: 发布多架构产物到Release
         if: >-
           (github.event_name == 'workflow_dispatch' && (github.event.inputs.arch == 'all' || matrix.arch == github.event.inputs.arch)) ||
           (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
@@ -121,10 +132,12 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: true
           replacesArtifacts: true
-          artifacts: "bin/packages/${{ matrix.arch }}/packages_ci/*.ipk"
-          tag: ${{ github.ref_name || 'auto-build-upstream-synced' }}
+          # 上传统一目录下的所有架构产物
+          artifacts: "bin/all-archs/**/*"
+          # 统一Tag，方便opkg源指向
+          tag: gecoosac-auto-update
           body: |
-            编译架构：${{ matrix.arch }}
+            支持架构：${{ matrix.arch }}
             触发方式：
             ${{ 
               github.event_name == 'workflow_dispatch' && '手动触发' ||
