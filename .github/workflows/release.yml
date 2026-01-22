@@ -1,4 +1,4 @@
-name: Build packages
+name: Build packages for unified opkg repo
 
 on:
   push:
@@ -60,11 +60,21 @@ jobs:
           PACKAGES: luci-app-gecoosac
           NO_REFRESH_CHECK: true
 
-      - name: Install dependencies for index generation
+      - name: Install basic dependencies
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y perl  # ipkg-make-index依赖perl
+          sudo apt-get install -y perl wget  # 仅需perl（脚本依赖）和wget（下载脚本）
+
+      - name: Get ipkg-make-index script from OpenWRT source
+        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
+        run: |
+          # 从OpenWRT官方源码下载ipkg-make-index脚本（兼容所有版本）
+          wget https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-make-index.pl -O /tmp/ipkg-make-index
+          # 赋予执行权限
+          chmod +x /tmp/ipkg-make-index
+          # 将脚本加入PATH，方便调用
+          export PATH=/tmp:$PATH
 
       - name: Create unified repo structure and generate opkg index
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
@@ -72,14 +82,18 @@ jobs:
           # 创建统一的opkg源根目录，按架构分文件夹
           mkdir -p ./opkg-repo/${{ matrix.arch }}
           # 复制编译好的ipk到对应架构目录
-          cp bin/packages/${{ matrix.arch }}/packages_ci/*.ipk ./opkg-repo/${{ matrix.arch }}/
-          # 生成Packages索引文件（opkg核心索引）
+          cp bin/packages/${{ matrix.arch }}/packages_ci/*.ipk ./opkg-repo/${{ matrix.arch }}/ || echo "No IPK files found for ${{ matrix.arch }}"
+          # 生成Packages索引文件（使用下载的脚本）
           cd ./opkg-repo/${{ matrix.arch }}
-          ipkg-make-index . > Packages
-          # 生成压缩版索引（opkg优先读取，节省流量）
-          gzip -c Packages > Packages.gz
-          # 生成校验和（可选，增强安全性）
-          sha256sum *.ipk Packages Packages.gz > Checksums
+          if [ -n "$(ls *.ipk 2>/dev/null)" ]; then
+            /tmp/ipkg-make-index . > Packages
+            # 生成压缩版索引（opkg优先读取，节省流量）
+            gzip -c Packages > Packages.gz
+            # 生成校验和（可选，增强安全性）
+            sha256sum *.ipk Packages Packages.gz > Checksums
+          else
+            echo "Skip index generation: No IPK files for ${{ matrix.arch }}"
+          fi
 
       - name: Upload single arch artifacts
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
