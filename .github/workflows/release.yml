@@ -1,10 +1,10 @@
-name: Build packages for unified opkg repo
+name: Build packages
 
 on:
   push:
     tags:
       - v*
-  workflow_dispatch:
+  workflow_dispatch:  # 手动触发事件
     inputs:
       arch:
         description: '指定要编译的架构（留空则编译所有架构）'
@@ -60,90 +60,60 @@ jobs:
           PACKAGES: luci-app-gecoosac
           NO_REFRESH_CHECK: true
 
-      - name: Install basic dependencies
+      # 核心新增：利用SDK内置的ipkg-make-index生成opkg索引（无外部下载）
+      - name: Generate opkg index files (use SDK built-in tool)
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y perl wget  # 仅需perl（脚本依赖）和wget（下载脚本）
+          # 进入ipk所在目录（原始代码的输出路径）
+          cd bin/packages/${{ matrix.arch }}/packages_ci/
+          # 利用SDK内置的ipkg-make-index生成索引（原始环境已自带，无需下载）
+          ipkg-make-index . > Packages
+          # 生成压缩版索引（opkg优先读取）
+          gzip -c Packages > Packages.gz
+          # 生成校验和（可选，增强安全性）
+          sha256sum *.ipk Packages Packages.gz > Checksums
 
-      - name: Get ipkg-make-index script from OpenWRT source
-        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
-        run: |
-          # 从OpenWRT官方源码下载ipkg-make-index脚本（兼容所有版本）
-          wget https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-make-index.pl -O /tmp/ipkg-make-index
-          # 赋予执行权限
-          chmod +x /tmp/ipkg-make-index
-          # 将脚本加入PATH，方便调用
-          export PATH=/tmp:$PATH
-
-      - name: Create unified repo structure and generate opkg index
-        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
-        run: |
-          # 创建统一的opkg源根目录，按架构分文件夹
-          mkdir -p ./opkg-repo/${{ matrix.arch }}
-          # 复制编译好的ipk到对应架构目录
-          cp bin/packages/${{ matrix.arch }}/packages_ci/*.ipk ./opkg-repo/${{ matrix.arch }}/ || echo "No IPK files found for ${{ matrix.arch }}"
-          # 生成Packages索引文件（使用下载的脚本）
-          cd ./opkg-repo/${{ matrix.arch }}
-          if [ -n "$(ls *.ipk 2>/dev/null)" ]; then
-            /tmp/ipkg-make-index . > Packages
-            # 生成压缩版索引（opkg优先读取，节省流量）
-            gzip -c Packages > Packages.gz
-            # 生成校验和（可选，增强安全性）
-            sha256sum *.ipk Packages Packages.gz > Checksums
-          else
-            echo "Skip index generation: No IPK files for ${{ matrix.arch }}"
-          fi
-
-      - name: Upload single arch artifacts
+      - name: Upload artifacts
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         uses: actions/upload-artifact@v4
         with:
-          name: opkg-repo-${{ matrix.arch }}
-          path: ./opkg-repo/${{ matrix.arch }}/
+          name: ${{ matrix.arch }}
+          # 上传时包含索引文件（Packages、Packages.gz、Checksums）
+          path: |
+            bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
+            bin/packages/${{ matrix.arch }}/packages_ci/Packages*
+            bin/packages/${{ matrix.arch }}/packages_ci/Checksums
 
-  # 新增汇总任务：合并所有架构的文件，发布到GitHub Pages（统一访问地址）
-  deploy-repo:
-    name: Deploy unified opkg repo to GitHub Pages
-    needs: build  # 依赖build任务完成
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all arch artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./opkg-repo
-          merge-multiple: true  # 合并所有架构的artifact到同一目录
-
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./opkg-repo  # 发布整个opkg-repo目录
-          publish_branch: gh-pages  # 发布到gh-pages分支（GitHub Pages默认）
-          force_orphan: true  # 清空旧分支内容，只保留最新的包
-
-  # 可选：同步发布到Release（备用下载地址）
-  release-repo:
-    name: Release unified opkg repo
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all arch artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./opkg-repo
-          merge-multiple: true
-
-      - name: Package repo for release
-        run: |
-          tar -zcvf opkg-repo.tar.gz ./opkg-repo
-
-      - name: Upload to Release
+      - name: Upload packages
+        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         uses: ncipollo/release-action@v1
         with:
           name: ${{ github.ref_name || 'Manual Build' }}
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: true
           replacesArtifacts: true
-          artifacts: ./opkg-repo.tar.gz
+          # 发布时包含索引文件
+          artifacts: |
+            bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
+            bin/packages/${{ matrix.arch }}/packages_ci/Packages*
+            bin/packages/${{ matrix.arch }}/packages_ci/Checksums
           tag: ${{ github.ref_name || 'manual-build' }}
+
+  # 新增：汇总所有架构文件，部署到GitHub Pages实现统一opkg源地址
+  deploy-unified-repo:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all arch artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./opkg-unified-repo
+          merge-multiple: true
+
+      - name: Deploy to GitHub Pages (unified opkg repo)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./opkg-unified-repo
+          publish_branch: gh-pages
+          force_orphan: true
