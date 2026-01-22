@@ -1,0 +1,150 @@
+# 工作流名称：编译OpenWRT插件包（支持opkg更新）
+name: Build packages for OpenWRT (opkg compatible)
+
+# 触发条件：标签推送(v开头) 或 手动触发
+on:
+  push:
+    tags:
+      - v*  # 推送v开头的标签时自动触发
+  workflow_dispatch:  # 手动触发
+    inputs:
+      arch:
+        description: '指定编译架构（留空编译所有架构）'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  # ========== 第一阶段：按架构编译插件 ==========
+  build-packages:
+    name: Build ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    # 矩阵编译：多架构并行编译，单个架构失败不影响整体
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - aarch64_cortex-a53
+          - aarch64_cortex-a72
+          - aarch64_generic
+          - arm_arm1176jzf-s_vfp
+          - arm_arm926ej-s
+          - arm_cortex-a15_neon-vfpv4
+          - arm_cortex-a5_vfpv4
+          - arm_cortex-a7
+          - arm_cortex-a7_neon-vfpv4
+          - arm_cortex-a8_vfpv3
+          - arm_cortex-a9
+          - arm_cortex-a9_neon
+          - arm_cortex-a9_vfpv3-d16
+          - arm_fa526
+          - arm_xscale
+          - i386_pentium-mmx
+          - i386_pentium4
+          - mips64_octeonplus
+          - mips_24kc
+          - mips_4kec
+          - mips_mips32
+          - mipsel_24kc_24kf
+          - mipsel_74kc
+          - mipsel_mips32
+          - x86_64
+
+    steps:
+      # 1. 拉取代码仓库
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 2. 编译指定架构的插件包
+      - name: Build packages for ${{ matrix.arch }}
+        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
+        uses: sbwml/openwrt-gh-action-sdk@main
+        env:
+          ARCH: ${{ matrix.arch }}-openwrt-24.10  # OpenWRT版本可根据需要调整
+          FEEDNAME: packages_ci
+          PACKAGES: luci-app-gecoosac           # 要编译的插件名称
+          NO_REFRESH_CHECK: true
+
+      # 3. 上传单个架构的编译产物（含临时索引文件）
+      - name: Upload single arch artifacts
+        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.arch }}
+          path: |
+            bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
+            bin/packages/${{ matrix.arch }}/packages_ci/Packages*
+
+  # ========== 第二阶段：汇总产物生成OPKG标准源 ==========
+  aggregate-for-opkg:
+    name: Aggregate packages to opkg repo
+    runs-on: ubuntu-latest
+    needs: build-packages  # 依赖编译阶段完成
+    # 仅当编译阶段不失败时执行（允许部分架构跳过）
+    if: ${{ always() && needs.build-packages.result != 'failure' }}
+    
+    steps:
+      # 1. 创建opkg源基础目录
+      - name: Create base directory structure
+        run: mkdir -p ./opkg-repo/packages
+
+      # 2. 下载所有架构的编译产物
+      - name: Download all architecture artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./opkg-repo/tmp
+          merge-multiple: false
+
+      # 3. 整理目录结构并生成OPKG索引文件（核心步骤）
+      - name: Organize repo and generate opkg indexes
+        run: |
+          # 安装索引生成工具
+          sudo apt-get update && sudo apt-get install -y ipkg-utils
+          
+          # 遍历所有架构目录
+          for arch_dir in ./opkg-repo/tmp/*; do
+            if [ -d "$arch_dir" ]; then
+              # 获取架构名称
+              arch=$(basename "$arch_dir")
+              # 创建架构专属目录
+              mkdir -p ./opkg-repo/packages/$arch
+              
+              # 移动ipk文件到对应目录
+              mv $arch_dir/*.ipk ./opkg-repo/packages/$arch/ 2>/dev/null || true
+              
+              # 进入架构目录生成索引
+              cd ./opkg-repo/packages/$arch
+              # 生成Packages文件（opkg核心索引）
+              ipkg-make-index . > Packages
+              # 生成压缩版索引（opkg优先读取）
+              gzip -c Packages > Packages.gz
+              # 返回上级目录
+              cd -
+            fi
+          done
+
+      # 4. 上传完整的OPKG源作为工件
+      - name: Upload full opkg repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: opkg-repository
+          path: ./opkg-repo
+
+      # 5. 发布OPKG源到GitHub Release
+      - name: Publish opkg repo to release
+        uses: ncipollo/release-action@v1
+        with:
+          name: ${{ github.ref_name || 'Manual Build' }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
+          replacesArtifacts: false  # 保留原有单个ipk，不覆盖
+          artifacts: |
+            ./opkg-repo/**/*
+            # 保留原有单个ipk的发布（兼容旧用法）
+            ./opkg-repo/tmp/*/*.ipk
+          tag: ${{ github.ref_name || 'manual-build' }}
+          body: |
+            ## 📦 OPKG源使用方法（无需区分架构）
+            1. 添加源到OpenWRT的/etc/opkg/customfeeds.conf：
