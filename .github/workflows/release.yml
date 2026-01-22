@@ -45,6 +45,7 @@ jobs:
           - mipsel_74kc
           - mipsel_mips32
           - x86_64
+    # 移除原错误的 if 条件，改用步骤内过滤
 
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +53,7 @@ jobs:
           fetch-depth: 0
 
       - name: Building packages
+        # 关键修复：把架构过滤条件移到步骤级别，此时 matrix 变量已生效
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         uses: sbwml/openwrt-gh-action-sdk@main
         env:
@@ -60,31 +62,16 @@ jobs:
           PACKAGES: luci-app-gecoosac
           NO_REFRESH_CHECK: true
 
-      # 核心新增：利用SDK内置的ipkg-make-index生成opkg索引（无外部下载）
-      - name: Generate opkg index files (use SDK built-in tool)
-        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
-        run: |
-          # 进入ipk所在目录（原始代码的输出路径）
-          cd bin/packages/${{ matrix.arch }}/packages_ci/
-          # 利用SDK内置的ipkg-make-index生成索引（原始环境已自带，无需下载）
-          ipkg-make-index . > Packages
-          # 生成压缩版索引（opkg优先读取）
-          gzip -c Packages > Packages.gz
-          # 生成校验和（可选，增强安全性）
-          sha256sum *.ipk Packages Packages.gz > Checksums
-
       - name: Upload artifacts
+        # 同步过滤：只上传指定架构的产物
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.arch }}
-          # 上传时包含索引文件（Packages、Packages.gz、Checksums）
-          path: |
-            bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
-            bin/packages/${{ matrix.arch }}/packages_ci/Packages*
-            bin/packages/${{ matrix.arch }}/packages_ci/Checksums
+          path: bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
 
       - name: Upload packages
+        # 同步过滤：只发布指定架构的产物
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         uses: ncipollo/release-action@v1
         with:
@@ -92,28 +79,5 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: true
           replacesArtifacts: true
-          # 发布时包含索引文件
-          artifacts: |
-            bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
-            bin/packages/${{ matrix.arch }}/packages_ci/Packages*
-            bin/packages/${{ matrix.arch }}/packages_ci/Checksums
+          artifacts: "bin/packages/${{ matrix.arch }}/packages_ci/*.ipk"
           tag: ${{ github.ref_name || 'manual-build' }}
-
-  # 新增：汇总所有架构文件，部署到GitHub Pages实现统一opkg源地址
-  deploy-unified-repo:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all arch artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./opkg-unified-repo
-          merge-multiple: true
-
-      - name: Deploy to GitHub Pages (unified opkg repo)
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./opkg-unified-repo
-          publish_branch: gh-pages
-          force_orphan: true
