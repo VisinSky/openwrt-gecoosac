@@ -1,21 +1,18 @@
-name: 编译发布
+name: 自动编译发布
 
-# 触发规则：
-# 1. 标签推送（v* 标签）：自动编译所有架构
-# 2. 手动触发：支持选择指定架构或全部架构
-# 3. 上游同步后触发（repository_dispatch）：自动编译所有架构
+# 触发规则：标签推送 + 手动触发 + 上游同步后触发
 on:
   push:
     tags:
       - v*
-  workflow_dispatch:  # 手动触发事件
+  workflow_dispatch:
     inputs:
       arch:
         description: '选择要编译的架构'
         required: true
-        type: choice  # 下拉列表类型
-        default: 'all'  # 默认选“全部架构”
-        options:  # 下拉列表选项（与矩阵架构一致）
+        type: choice
+        default: 'all'
+        options:
           - 'all'
           - 'aarch64_cortex-a53'
           - 'aarch64_cortex-a72'
@@ -44,15 +41,15 @@ on:
           - 'mipsel_74kc'
           - 'mipsel_mips32'
           - 'x86_64'
-  repository_dispatch:  # 上游同步后触发（与sync-upstream.yml的event-type匹配）
-    types: [upstream_synced]
+  repository_dispatch:
+    types: [upstream_synced]  # 与sync-upstream.yml的触发类型一致
 
 jobs:
   build:
     name: Build ${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false  # 一个架构编译失败不影响其他架构
+      fail-fast: false
       matrix:
         arch:
           - aarch64_cortex-a53
@@ -86,26 +83,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 拉取完整历史，确保编译环境完整
+          fetch-depth: 0
 
-      # 核心逻辑：根据触发方式判断编译架构
-      - name: Building packages
-        # 触发条件：
-        # 1. 手动触发：选all则编译所有架构，否则只编译选中的架构
-        # 2. 标签推送/上游同步触发：默认编译所有架构
+      # 编译逻辑：适配不同触发方式
+      - name: 编译OpenWrt插件
         if: >-
           (github.event_name == 'workflow_dispatch' && (github.event.inputs.arch == 'all' || matrix.arch == github.event.inputs.arch)) ||
           (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
           (github.event_name == 'repository_dispatch' && github.event.action == 'upstream_synced')
         uses: sbwml/openwrt-gh-action-sdk@main
         env:
-          ARCH: ${{ matrix.arch }}-openwrt-24.10  # 对应OpenWrt 24.10 SDK架构
+          ARCH: ${{ matrix.arch }}-openwrt-24.10
           FEEDNAME: packages_ci
-          PACKAGES: luci-app-gecoosac  # 要编译的插件名
+          PACKAGES: luci-app-gecoosac
           NO_REFRESH_CHECK: true
 
-      # 上传编译产物到Action临时产物
-      - name: Upload artifacts
+      # 上传编译产物到Action临时存储
+      - name: 上传编译产物
         if: >-
           (github.event_name == 'workflow_dispatch' && (github.event.inputs.arch == 'all' || matrix.arch == github.event.inputs.arch)) ||
           (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
@@ -115,21 +109,19 @@ jobs:
           name: ${{ matrix.arch }}
           path: bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
 
-      # 将编译产物发布到GitHub Release
-      - name: Upload packages to Release
+      # 发布编译产物到GitHub Release
+      - name: 发布产物到Release
         if: >-
           (github.event_name == 'workflow_dispatch' && (github.event.inputs.arch == 'all' || matrix.arch == github.event.inputs.arch)) ||
           (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
           (github.event_name == 'repository_dispatch' && github.event.action == 'upstream_synced')
         uses: ncipollo/release-action@v1
         with:
-          # 发布名称：标签触发用标签名，手动/同步触发用“Manual Build”
           name: ${{ github.ref_name || 'Auto Build (Upstream Synced)' }}
           token: ${{ secrets.GITHUB_TOKEN }}
-          allowUpdates: true  # 允许更新已存在的Release
-          replacesArtifacts: true  # 替换已存在的产物
+          allowUpdates: true
+          replacesArtifacts: true
           artifacts: "bin/packages/${{ matrix.arch }}/packages_ci/*.ipk"
-          # 标签：标签触发用标签名，手动/同步触发用固定标签（避免冲突）
           tag: ${{ github.ref_name || 'auto-build-upstream-synced' }}
           body: |
             编译架构：${{ matrix.arch }}
