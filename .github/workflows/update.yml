@@ -1,92 +1,103 @@
 name: 自动同步上游仓库更新
 
+# 触发规则：每周日UTC零点自动执行 + 支持手动触发
 on:
   schedule:
-    - cron: '0 0 * * 0'  # 每周日UTC零点执行
-  workflow_dispatch:     # 允许手动触发
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
 
 jobs:
   sync-upstream:
     runs-on: ubuntu-latest
+    # 必要权限：写入仓库内容 + 触发repository_dispatch事件
     permissions:
-      contents: write  # 授予写入仓库内容的权限
-      repository-projects: write  # 授予触发repository_dispatch的权限
+      contents: write
+      repository-projects: write
 
     steps:
-      # 步骤1：检出你fork的仓库代码
+      # 步骤1：检出当前仓库代码（拉取完整历史用于对比更新）
       - name: 检出仓库代码
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 拉取所有历史，确保能合并上游
-          persist-credentials: false  # 推荐保留，避免凭据冲突
+          fetch-depth: 0          # 拉取所有提交历史，确保能对比上游更新
+          persist-credentials: false  # 禁用默认凭据，避免冲突
 
-      # 步骤2：配置git用户信息（引用Secrets变量，无明文暴露）
-      - name: 配置git用户信息
+      # 步骤2：配置Git用户信息（引用Secrets，避免明文）
+      - name: 配置Git用户信息
         run: |
           git config --global user.name "${{ secrets.GIT_USER_NAME }}"
           git config --global user.email "${{ secrets.GIT_USER_EMAIL }}"
 
-      # 步骤3：添加上游仓库地址并拉取更新
+      # 步骤3：添加上游仓库并拉取最新代码
       - name: 添加上游仓库并拉取最新代码
         run: |
+          # 上游仓库地址（集客AC插件原仓库）
           UPSTREAM_REPO="https://github.com/lwb1978/openwrt-gecoosac.git"
           UPSTREAM_BRANCH="main"
           
           # 添加上游仓库（已存在则更新地址）
           git remote add upstream $UPSTREAM_REPO || git remote set-url upstream $UPSTREAM_REPO
+          # 拉取上游仓库指定分支的最新代码
           git fetch upstream $UPSTREAM_BRANCH
 
-      # 步骤4：检测上游是否有更新
+      # 步骤4：检测上游是否有更新（核心判断）
       - name: 检测上游仓库更新
         id: check_update
         run: |
-          # 获取本地main分支和上游main分支的最新commit ID
+          # 获取本地main分支和上游main分支的最新Commit ID
           LOCAL_COMMIT=$(git rev-parse main)
           UPSTREAM_COMMIT=$(git rev-parse upstream/main)
           
-          # 对比commit ID，输出是否有更新的标识
+          # 对比Commit ID，判断是否有更新
           if [ "$LOCAL_COMMIT" != "$UPSTREAM_COMMIT" ]; then
-            echo "✅ 检测到上游仓库有更新！本地Commit: $LOCAL_COMMIT | 上游Commit: $UPSTREAM_COMMIT"
+            echo "✅ 检测到上游仓库有更新！"
+            echo "  本地Commit: $LOCAL_COMMIT"
+            echo "  上游Commit: $UPSTREAM_COMMIT"
             echo "has_update=true" >> $GITHUB_OUTPUT
           else
             echo "ℹ️ 上游仓库无更新，本地代码已是最新版本（Commit: $LOCAL_COMMIT）"
             echo "has_update=false" >> $GITHUB_OUTPUT
           fi
 
-      # 步骤5：仅当有更新时，合并上游代码
+      # 步骤5：仅当有更新时，合并上游代码（快进合并，避免冲突）
       - name: 合并上游仓库更新
         if: steps.check_update.outputs.has_update == 'true'
         run: |
           git checkout main
-          # --ff-only 确保仅快进合并（无冲突），有冲突则流程失败（需手动处理）
+          # --ff-only：仅快进合并，有冲突则失败（需手动处理）
           git merge upstream/main --ff-only
-          echo "✅ 已成功合并上游仓库更新到本地main分支"
+          echo "✅ 已成功合并上游更新到本地main分支"
 
-      # 步骤6：仅当有更新时，推送同步后的代码
-      - name: 推送同步后的代码
+      # 步骤6：仅当有更新时，推送同步后的代码（精准指定分支，避免标签冲突）
+      - name: 推送同步后的代码到远程仓库
         if: steps.check_update.outputs.has_update == 'true'
+        id: push_code  # 新增ID，用于判断推送是否成功
         run: |
-          # 配置git远程仓库地址（带token认证）
+          # 配置远程仓库地址（带Token认证）
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          # 明确推送refs/heads/main（分支），而非仅main（会匹配分支+标签）
+          # 精准推送main分支（避免分支/标签重名冲突）
           git push origin refs/heads/main:refs/heads/main
           echo "✅ 已成功将同步后的代码推送到远程main分支"
 
-      # 步骤7：仅当同步成功后，触发编译工作流
-      - name: 触发自动编译工作流
-        if: steps.check_update.outputs.has_update == 'true'
+      # 步骤7：仅当「有更新 + 推送成功」时，触发release.yml编译
+      - name: 触发自动编译工作流（release.yml）
+        if: steps.check_update.outputs.has_update == 'true' && steps.push_code.outcome == 'success'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          event-type: upstream_synced
-          repository: ${{ github.repository }}
+          event-type: upstream_synced  # 需与release.yml中的触发类型一致
+          repository: ${{ github.repository }}  # 当前仓库（自动填充）
         id: trigger_compile
 
-      # 步骤8：输出最终状态（核心新增：明确标注结果）
+      # 步骤8：输出最终执行状态（语义化日志）
       - name: 输出同步最终状态
         run: |
           if [ "${{ steps.check_update.outputs.has_update }}" = "true" ]; then
-            echo "🎉 上游仓库更新同步完成！已触发自动编译工作流（事件类型：upstream_synced）"
+            if [ "${{ steps.push_code.outcome }}" = "success" ]; then
+              echo "🎉 上游仓库更新同步完成！已触发release.yml自动编译（事件类型：upstream_synced）"
+            else
+              echo "❌ 上游仓库有更新，但代码推送失败，未触发编译！"
+            fi
           else
-            echo "ℹ️ 上游仓库无更新，无需同步，流程结束"
+            echo "ℹ️ 上游仓库无更新，无需同步，流程结束（未触发编译）"
           fi
