@@ -296,3 +296,17 @@ jobs:
           body: |
             ## 📦 OPKG源使用方法（无需区分架构）
             1. 添加源到/etc/opkg/customfeeds.conf：
+            2. 编辑opkg源配置文件：
+                vi /etc/opkg/customfeeds.conf
+            3.在文件末尾添加以下内容（直接复制，无需修改）：
+                src/gz packages_ci https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/
+            4.保存退出（vi 编辑器按ESC→输入:wq→回车）；
+            5.更新 OPKG 缓存（必做）
+                opkg update
+            6.首次安装插件
+                opkg install luci-app-gecoosac
+            7.升级已安装的插件
+                opkg upgrade luci-app-gecoosac
+            8.验证安装 / 更新结果
+                opkg list-installed | grep luci-app-gecoosac
+            
