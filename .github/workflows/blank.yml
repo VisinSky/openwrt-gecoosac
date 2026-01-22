@@ -299,7 +299,7 @@ jobs:
             2. 编辑opkg源配置文件：
                 vi /etc/opkg/customfeeds.conf
             3.在文件末尾添加以下内容（直接复制，无需修改）：
-                src/gz packages_ci https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/
+                src/gz packages_ci https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/${{ github.ref_name || 'manual-build' }}/opkg-repo/packages
             4.保存退出（vi 编辑器按ESC→输入:wq→回车）；
             5.更新 OPKG 缓存（必做）
                 opkg update
