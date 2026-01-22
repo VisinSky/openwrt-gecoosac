@@ -17,63 +17,39 @@ jobs:
       - name: 检出仓库代码
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 拉取所有历史，确保能对比上游更新
-          persist-credentials: false  # 避免凭据冲突
+          fetch-depth: 0  # 拉取所有历史，确保能合并上游
+          persist-credentials: false  # 推荐保留，避免凭据冲突
 
-      # 步骤2：配置git用户信息（引用Secrets变量）
+      # 步骤2：配置git用户信息（引用Secrets变量，无明文暴露）
       - name: 配置git用户信息
         run: |
           git config --global user.name "${{ secrets.GIT_USER_NAME }}"
           git config --global user.email "${{ secrets.GIT_USER_EMAIL }}"
 
       # 步骤3：添加上游仓库地址并拉取更新
-      - name: 添加上游仓库并拉取最新代码
+      - name: 拉取上游仓库更新
         run: |
-          UPSTREAM_REPO="https://github.com/lwb1978/openwrt-gecoosac.git"
-          UPSTREAM_BRANCH="main"
+          UPSTREAM_REPO="https://github.com/lwb1978/openwrt-gecoosac.git"  # 替换为原仓库地址
+          UPSTREAM_BRANCH="main"  # 替换为原仓库主分支
           
-          # 添加上游仓库（已存在则更新地址）
           git remote add upstream $UPSTREAM_REPO || git remote set-url upstream $UPSTREAM_REPO
-          git fetch upstream $UPSTREAM_BRANCH
-
-      # 步骤4：检测上游是否有更新（核心新增）
-      - name: 检测上游仓库更新
-        id: check_update
-        run: |
-          # 获取本地main分支和上游main分支的最新commit ID
-          LOCAL_COMMIT=$(git rev-parse main)
-          UPSTREAM_COMMIT=$(git rev-parse upstream/main)
+          git fetch upstream
           
-          # 对比commit ID，输出是否有更新的标识
-          if [ "$LOCAL_COMMIT" != "$UPSTREAM_COMMIT" ]; then
-            echo "检测到上游仓库有更新！"
-            echo "has_update=true" >> $GITHUB_OUTPUT
-          else
-            echo "上游仓库无更新，结束流程。"
-            echo "has_update=false" >> $GITHUB_OUTPUT
-          fi
-
-      # 步骤5：仅当有更新时，合并上游代码
-      - name: 合并上游仓库更新
-        if: steps.check_update.outputs.has_update == 'true'
-        run: |
           git checkout main
-          # --ff-only 确保仅快进合并（无冲突），有冲突则流程失败（需手动处理）
-          git merge upstream/main --ff-only
+          git merge upstream/$UPSTREAM_BRANCH --ff-only
 
-      # 步骤6：仅当有更新时，推送同步后的代码
+      # 步骤4：推送同步后的代码（核心修改：精准指定推送分支，避免名称冲突）
       - name: 推送同步后的代码
-        if: steps.check_update.outputs.has_update == 'true'
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: main
+        run: |
+          # 配置git远程仓库地址（带token认证）
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          # 明确推送refs/heads/main（分支），而非仅main（会匹配分支+标签）
+          git push origin refs/heads/main:refs/heads/main
 
-      # 步骤7：仅当同步成功后，触发release.yml编译（核心新增）
+      # 步骤5：触发编译工作流（保持不变）
       - name: 触发自动编译工作流
-        if: steps.check_update.outputs.has_update == 'true'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          event-type: upstream_synced  # 自定义触发类型（需与release.yml匹配）
-          repository: ${{ github.repository }}  # 当前仓库（格式：owner/repo）
+          event-type: upstream_synced
+          repository: ${{ github.repository }}
