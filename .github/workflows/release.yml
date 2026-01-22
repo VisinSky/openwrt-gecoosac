@@ -1,4 +1,4 @@
-name: 自动编译发布
+name: OpenWrt 自动编译发布
 
 on:
   push:
@@ -13,32 +13,17 @@ on:
         default: 'all'
         options:
           - 'all'
+          # 仅保留兼容的核心架构
           - 'aarch64_cortex-a53'
           - 'aarch64_cortex-a72'
           - 'aarch64_generic'
-          - 'arm_arm1176jzf-s_vfp'
-          - 'arm_arm926ej-s'
-          - 'arm_cortex-a15_neon-vfpv4'
-          - 'arm_cortex-a5_vfpv4'
           - 'arm_cortex-a7'
-          - 'arm_cortex-a7_neon-vfpv4'
-          - 'arm_cortex-a8_vfpv3'
           - 'arm_cortex-a9'
-          - 'arm_cortex-a9_neon'
-          - 'arm_cortex-a9_vfpv3-d16'
-          - 'arm_fa526'
-          - 'arm_mpcore'
-          - 'arm_xscale'
-          - 'i386_pentium-mmx'
           - 'i386_pentium4'
-          - 'mips64_octeonplus'
           - 'mips_24kc'
-          - 'mips_4kec'
-          - 'mips_mips32'
           - 'mipsel_24kc'
           - 'mipsel_24kc_24kf'
           - 'mipsel_74kc'
-          - 'mipsel_mips32'
           - 'x86_64'
   repository_dispatch:
     types: [upstream_synced]
@@ -48,35 +33,20 @@ jobs:
     name: Build ${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
+      fail-fast: false  # 单个架构失败不影响其他架构
       matrix:
+        # 仅保留OpenWrt 23.05有SDK镜像的兼容架构
         arch:
           - aarch64_cortex-a53
           - aarch64_cortex-a72
           - aarch64_generic
-          - arm_arm1176jzf-s_vfp
-          - arm_arm926ej-s
-          - arm_cortex-a15_neon-vfpv4
-          - arm_cortex-a5_vfpv4
           - arm_cortex-a7
-          - arm_cortex-a7_neon-vfpv4
-          - arm_cortex-a8_vfpv3
           - arm_cortex-a9
-          - arm_cortex-a9_neon
-          - arm_cortex-a9_vfpv3-d16
-          - arm_fa526
-          - arm_mpcore
-          - arm_xscale
-          - i386_pentium-mmx
           - i386_pentium4
-          - mips64_octeonplus
           - mips_24kc
-          - mips_4kec
-          - mips_mips32
           - mipsel_24kc
           - mipsel_24kc_24kf
           - mipsel_74kc
-          - mipsel_mips32
           - x86_64
 
     steps:
@@ -84,63 +54,79 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 新增：架构兼容性检查，跳过不支持的架构
+      - name: 检查架构兼容性
+        id: check_arch_support
+        run: |
+          # 定义插件支持的架构列表
+          SUPPORTED_ARCHS=("aarch64_cortex-a53" "aarch64_cortex-a72" "aarch64_generic" "arm_cortex-a7" "arm_cortex-a9" "i386_pentium4" "mips_24kc" "mipsel_24kc" "mipsel_24kc_24kf" "mipsel_74kc" "x86_64")
+          if [[ " ${SUPPORTED_ARCHS[@]} " =~ " ${{ matrix.arch }} " ]]; then
+            echo "✅ 架构${{ matrix.arch }}受支持，继续编译"
+            echo "arch_supported=true" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ 架构${{ matrix.arch }}不受支持，跳过编译"
+            echo "arch_supported=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Building packages
         if: >-
           (github.event_name == 'workflow_dispatch' && (github.event.inputs.arch == 'all' || matrix.arch == github.event.inputs.arch)) ||
           (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
-          (github.event_name == 'repository_dispatch' && github.event.action == 'upstream_synced')
+          (github.event_name == 'repository_dispatch' && github.event.action == 'upstream_synced') &&
+          steps.check_arch_support.outputs.arch_supported == 'true'
         uses: sbwml/openwrt-gh-action-sdk@main
         env:
-          ARCH: ${{ matrix.arch }}-openwrt-24.10
+          # 降级SDK版本到23.05（支持更多架构，兼容性更好）
+          ARCH: ${{ matrix.arch }}-openwrt-23.05
           FEEDNAME: packages_ci
           PACKAGES: luci-app-gecoosac
           NO_REFRESH_CHECK: true
 
-      # 新增：创建统一目录，将当前架构的产物复制进去
+      # 整理多架构产物到统一目录
       - name: 整理多架构产物到统一目录
         if: >-
           (github.event_name == 'workflow_dispatch' && (github.event.inputs.arch == 'all' || matrix.arch == github.event.inputs.arch)) ||
           (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
-          (github.event_name == 'repository_dispatch' && github.event.action == 'upstream_synced')
+          (github.event_name == 'repository_dispatch' && github.event.action == 'upstream_synced') &&
+          steps.check_arch_support.outputs.arch_supported == 'true'
         run: |
-          # 创建统一目录（all-archs），子目录为架构名
           mkdir -p bin/all-archs/${{ matrix.arch }}
-          # 复制ipk和Packages.gz到统一目录
           cp bin/packages/${{ matrix.arch }}/packages_ci/*.ipk bin/all-archs/${{ matrix.arch }}/
           cp bin/packages/${{ matrix.arch }}/packages_ci/Packages.gz bin/all-archs/${{ matrix.arch }}/
 
-      # 上传整理后的产物（统一目录）
+      # 上传整理后的产物
       - name: Upload artifacts
         if: >-
           (github.event_name == 'workflow_dispatch' && (github.event.inputs.arch == 'all' || matrix.arch == github.event.inputs.arch)) ||
           (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
-          (github.event_name == 'repository_dispatch' && github.event.action == 'upstream_synced')
+          (github.event_name == 'repository_dispatch' && github.event.action == 'upstream_synced') &&
+          steps.check_arch_support.outputs.arch_supported == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: all-archs-${{ matrix.arch }}
           path: bin/all-archs/
 
-      # 发布统一目录的所有产物到Release
+      # 发布多架构产物到Release
       - name: 发布多架构产物到Release
         if: >-
           (github.event_name == 'workflow_dispatch' && (github.event.inputs.arch == 'all' || matrix.arch == github.event.inputs.arch)) ||
           (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
-          (github.event_name == 'repository_dispatch' && github.event.action == 'upstream_synced')
+          (github.event_name == 'repository_dispatch' && github.event.action == 'upstream_synced') &&
+          steps.check_arch_support.outputs.arch_supported == 'true'
         uses: ncipollo/release-action@v1
         with:
           name: ${{ github.ref_name || 'Auto Build (Upstream Synced)' }}
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: true
           replacesArtifacts: true
-          # 上传统一目录下的所有架构产物
           artifacts: "bin/all-archs/**/*"
-          # 统一Tag，方便opkg源指向
           tag: gecoosac-auto-update
           body: |
-            支持架构：${{ matrix.arch }}
+            编译架构：${{ matrix.arch }}
             触发方式：
             ${{ 
               github.event_name == 'workflow_dispatch' && '手动触发' ||
               github.event_name == 'push' && '标签推送' ||
               github.event_name == 'repository_dispatch' && '上游仓库同步后自动触发'
             }}
+            SDK版本：OpenWrt 23.05
