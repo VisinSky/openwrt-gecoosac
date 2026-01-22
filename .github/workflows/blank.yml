@@ -1,230 +1,298 @@
-# ========== 第二阶段：汇总产物生成OPKG标准源 ==========
-aggregate-for-opkg:
-  name: Aggregate packages to opkg repo
-  runs-on: ubuntu-latest
-  needs: build-packages  # 依赖编译阶段完成
-  # 仅当编译阶段不失败时执行（允许部分架构跳过）
-  if: ${{ always() && needs.build-packages.result != 'failure' }}
-  
-  steps:
-    # 1. 创建opkg源基础目录
-    - name: Create base directory structure
-      run: mkdir -p ./opkg-repo/packages
+# 工作流名称：编译OpenWRT插件包（支持opkg更新）
+name: Build packages for OpenWRT (opkg compatible)
 
-    # 2. 下载所有架构的编译产物
-    - name: Download all architecture artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: ./opkg-repo/tmp
-        merge-multiple: false
+# 触发条件：标签推送(v开头) 或 手动触发（根节点on）
+on:
+  push:
+    tags:
+      - v*  # 推送v开头的标签时自动触发
+  workflow_dispatch:  # 手动触发
+    inputs:
+      arch:
+        description: '指定编译架构（留空编译所有架构）'
+        required: false
+        type: string
+        default: ''
 
-    # 3. 整理目录结构并生成OPKG索引文件（核心步骤，修复404+ipkg-utils问题）
-    - name: Organize repo and generate opkg indexes
-      run: |
-        # 安装必备依赖（wget/perl已预装，这里仅兜底）
-        sudo apt-get update && sudo apt-get install -y perl
-        
-        # 直接创建ipkg-make-index脚本（内嵌核心代码，无需外部下载）
-        cat > /usr/local/bin/ipkg-make-index << 'EOF'
-        #!/usr/bin/perl -w
-        use strict;
-        use File::Basename;
-        use POSIX;
+# ========== 核心根节点jobs（必选！所有任务必须放在这里面） ==========
+jobs:
+  # 第一阶段：按架构编译插件（jobs的子节点，2空格缩进）
+  build-packages:
+    name: Build ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - aarch64_cortex-a53
+          - aarch64_cortex-a72
+          - aarch64_generic
+          - arm_arm1176jzf-s_vfp
+          - arm_arm926ej-s
+          - arm_cortex-a15_neon-vfpv4
+          - arm_cortex-a5_vfpv4
+          - arm_cortex-a7
+          - arm_cortex-a7_neon-vfpv4
+          - arm_cortex-a8_vfpv3
+          - arm_cortex-a9
+          - arm_cortex-a9_neon
+          - arm_cortex-a9_vfpv3-d16
+          - arm_fa526
+          - arm_xscale
+          - i386_pentium-mmx
+          - i386_pentium4
+          - mips64_octeonplus
+          - mips_24kc
+          - mips_4kec
+          - mips_mips32
+          - mipsel_24kc_24kf
+          - mipsel_74kc
+          - mipsel_mips32
+          - x86_64
 
-        my $packages = {};
+    steps:
+      # 1. 拉取代码仓库
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-        sub md5sum {
-                my $file = shift;
-                open(F, $file) or return "";
-                binmode(F);
-                my $ctx = Digest::MD5->new;
-                $ctx->addfile(*F);
-                close(F);
-                return $ctx->hexdigest;
-        }
+      # 2. 编译指定架构的插件包
+      - name: Build packages for ${{ matrix.arch }}
+        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
+        uses: sbwml/openwrt-gh-action-sdk@main
+        env:
+          ARCH: ${{ matrix.arch }}-openwrt-24.10
+          FEEDNAME: packages_ci
+          PACKAGES: luci-app-gecoosac
+          NO_REFRESH_CHECK: true
 
-        sub parse_control {
-                my ($file, $offset, $len) = @_;
-                my $data = "";
-                open(F, $file) or return undef;
-                binmode(F);
-                seek(F, $offset, 0);
-                read(F, $data, $len);
-                close(F);
-                my $ctrl = {};
-                my $key = undef;
-                for my $line (split(/\n/, $data)) {
-                        $line =~ s/\r$//;
-                        if ($line =~ /^(\w+):\s*(.*)$/) {
-                                $key = $1;
-                                $ctrl->{$key} = $2;
-                        } elsif ($line =~ /^\s+(.*)$/ && defined($key)) {
-                                $ctrl->{$key} .= " $1";
-                        } elsif ($line eq "") {
-                                $key = undef;
-                        }
-                }
-                return $ctrl;
-        }
+      # 3. 上传单个架构的编译产物
+      - name: Upload single arch artifacts
+        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.arch }}
+          path: |
+            bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
+            bin/packages/${{ matrix.arch }}/packages_ci/Packages*
 
-        sub ipkg_info {
-                my $file = shift;
-                my $info = {};
-                $info->{filename} = $file;
-                if (!open(F, "$file")) {
-                        warn "Cannot open $file: $!\n";
-                        return undef;
-                }
-                binmode(F);
-                my $magic;
-                read(F, $magic, 2);
-                if ($magic ne "PK") {
-                        close(F);
-                        warn "$file: Not an ipk file\n";
-                        return undef;
-                }
-                seek(F, 0, 2);
-                my $len = tell(F);
-                $info->{size} = $len;
-                seek(F, 0, 0);
-                my $ctx = Digest::MD5->new;
-                $ctx->addfile(*F);
-                $info->{md5sum} = $ctx->hexdigest;
-                close(F);
-                my @tar_cmd = ('tar', '-tf', $file);
-                my @tar_list;
-                for my $line (`@tar_cmd`) {
-                        chomp $line;
-                        push @tar_list, $line;
-                }
-                my ($control_tar_gz) = grep(/^control.tar.gz$/, @tar_list);
-                my ($data_tar_gz) = grep(/^data.tar.gz$/, @tar_list);
-                my $ar_info = {};
-                open(F, "ar -tv $file |") or return undef;
-                while (<F>) {
-                        if (/^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.*)$/) {
-                                my $name = $6;
-                                $ar_info->{$name} = {
-                                        offset => $4,
-                                        size => $5,
-                                };
-                        }
-                }
-                close(F);
-                if (!$control_tar_gz || !$ar_info->{$control_tar_gz}) {
-                        warn "$file: No control.tar.gz found\n";
-                        return undef;
-                }
-                my $ctrl_tar = $ar_info->{$control_tar_gz};
-                my $ctrl = parse_control($file, $ctrl_tar->{offset}, $ctrl_tar->{size});
-                return undef unless $ctrl;
-                for my $k (keys %$ctrl) {
-                        $info->{lc($k)} = $ctrl->{$k};
-                }
-                $info->{package} = $ctrl->{Package} if $ctrl->{Package};
-                $info->{version} = $ctrl->{Version} if $ctrl->{Version};
-                $info->{architecture} = $ctrl->{Architecture} if $ctrl->{Architecture};
-                $info->{filename} = basename($file);
-                return $info;
-        }
+  # 第二阶段：汇总产物生成OPKG标准源（与build-packages同级，2空格缩进）
+  aggregate-for-opkg:
+    name: Aggregate packages to opkg repo
+    runs-on: ubuntu-latest
+    needs: build-packages
+    if: ${{ always() && needs.build-packages.result != 'failure' }}
+    
+    steps:
+      # 1. 创建opkg源基础目录
+      - name: Create base directory structure
+        run: mkdir -p ./opkg-repo/packages
 
-        eval {
-                require Digest::MD5;
-                Digest::Perl::MD5->import();
-                *Digest::MD5::new = \&Digest::Perl::MD5::new;
-        };
-        if ($@) {
-                die "MD5 support not available. Please install Digest::MD5 or Digest::Perl::MD5\n";
-        }
+      # 2. 下载所有架构的编译产物
+      - name: Download all architecture artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./opkg-repo/tmp
+          merge-multiple: false
 
-        my $dir = shift || ".";
-        opendir(D, $dir) or die "Cannot open directory $dir: $!\n";
-        my @files = grep { /\.ipk$/ } readdir(D);
-        closedir(D);
-        for my $file (sort @files) {
-                my $info = ipkg_info("$dir/$file");
-                next unless $info;
-                my $pkg = $info->{package};
-                my $ver = $info->{version};
-                my $arch = $info->{architecture};
-                if ($packages->{$pkg}->{$arch}->{$ver}) {
-                        warn "Duplicate package $pkg $ver $arch\n";
-                        next;
-                }
-                $packages->{$pkg}->{$arch}->{$ver} = $info;
-        }
-        for my $pkg (sort keys %$packages) {
-                for my $arch (sort keys %{$packages->{$pkg}}) {
-                        for my $ver (sort keys %{$packages->{$pkg}->{$arch}}) {
-                                my $info = $packages->{$pkg}->{$arch}->{$ver};
-                                print "Package: $info->{package}\n";
-                                print "Version: $info->{version}\n";
-                                print "Architecture: $info->{architecture}\n" if $info->{architecture};
-                                print "Maintainer: $info->{maintainer}\n" if $info->{maintainer};
-                                print "Depends: $info->{depends}\n" if $info->{depends};
-                                print "Provides: $info->{provides}\n" if $info->{provides};
-                                print "Source: $info->{source}\n" if $info->{source};
-                                print "Section: $info->{section}\n" if $info->{section};
-                                print "Priority: $info->{priority}\n" if $info->{priority};
-                                print "Description: $info->{description}\n" if $info->{description};
-                                print "Size: $info->{size}\n" if $info->{size};
-                                print "MD5Sum: $info->{md5sum}\n" if $info->{md5sum};
-                                print "Filename: $info->{filename}\n" if $info->{filename};
-                                print "\n";
-                        }
-                }
-        }
-        EOF
+      # 3. 整理目录+生成OPKG索引（修复404+ipkg-utils问题）
+      - name: Organize repo and generate opkg indexes
+        run: |
+          # 安装必备依赖
+          sudo apt-get update && sudo apt-get install -y perl
+          
+          # 内嵌ipkg-make-index脚本（解决404）
+          cat > /usr/local/bin/ipkg-make-index << 'EOF'
+          #!/usr/bin/perl -w
+          use strict;
+          use File::Basename;
+          use POSIX;
 
-        # 给脚本添加可执行权限
-        chmod +x /usr/local/bin/ipkg-make-index
-        
-        # 遍历所有架构目录
-        for arch_dir in ./opkg-repo/tmp/*; do
-          if [ -d "$arch_dir" ]; then
-            # 获取架构名称
-            arch=$(basename "$arch_dir")
-            # 创建架构专属目录
-            mkdir -p ./opkg-repo/packages/$arch
-            
-            # 移动ipk文件到对应目录（容错：无ipk时不报错）
-            mv $arch_dir/*.ipk ./opkg-repo/packages/$arch/ 2>/dev/null || true
-            
-            # 检查是否有ipk文件，有则生成索引（避免空目录生成无效索引）
-            if ls ./opkg-repo/packages/$arch/*.ipk 1> /dev/null 2>&1; then
-              # 进入架构目录生成索引
-              cd ./opkg-repo/packages/$arch
-              # 生成Packages文件（opkg核心索引）
-              ipkg-make-index . > Packages
-              # 生成压缩版索引（opkg优先读取）
-              gzip -c Packages > Packages.gz
-              # 返回上级目录
-              cd -
+          my $packages = {};
+
+          sub md5sum {
+                  my $file = shift;
+                  open(F, $file) or return "";
+                  binmode(F);
+                  my $ctx = Digest::MD5->new;
+                  $ctx->addfile(*F);
+                  close(F);
+                  return $ctx->hexdigest;
+          }
+
+          sub parse_control {
+                  my ($file, $offset, $len) = @_;
+                  my $data = "";
+                  open(F, $file) or return undef;
+                  binmode(F);
+                  seek(F, $offset, 0);
+                  read(F, $data, $len);
+                  close(F);
+                  my $ctrl = {};
+                  my $key = undef;
+                  for my $line (split(/\n/, $data)) {
+                          $line =~ s/\r$//;
+                          if ($line =~ /^(\w+):\s*(.*)$/) {
+                                  $key = $1;
+                                  $ctrl->{$key} = $2;
+                          } elsif ($line =~ /^\s+(.*)$/ && defined($key)) {
+                                  $ctrl->{$key} .= " $1";
+                          } elsif ($line eq "") {
+                                  $key = undef;
+                          }
+                  }
+                  return $ctrl;
+          }
+
+          sub ipkg_info {
+                  my $file = shift;
+                  my $info = {};
+                  $info->{filename} = $file;
+                  if (!open(F, "$file")) {
+                          warn "Cannot open $file: $!\n";
+                          return undef;
+                  }
+                  binmode(F);
+                  my $magic;
+                  read(F, $magic, 2);
+                  if ($magic ne "PK") {
+                          close(F);
+                          warn "$file: Not an ipk file\n";
+                          return undef;
+                  }
+                  seek(F, 0, 2);
+                  my $len = tell(F);
+                  $info->{size} = $len;
+                  seek(F, 0, 0);
+                  my $ctx = Digest::MD5->new;
+                  $ctx->addfile(*F);
+                  $info->{md5sum} = $ctx->hexdigest;
+                  close(F);
+                  my @tar_cmd = ('tar', '-tf', $file);
+                  my @tar_list;
+                  for my $line (`@tar_cmd`) {
+                          chomp $line;
+                          push @tar_list, $line;
+                  }
+                  my ($control_tar_gz) = grep(/^control.tar.gz$/, @tar_list);
+                  my ($data_tar_gz) = grep(/^data.tar.gz$/, @tar_list);
+                  my $ar_info = {};
+                  open(F, "ar -tv $file |") or return undef;
+                  while (<F>) {
+                          if (/^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.*)$/) {
+                                  my $name = $6;
+                                  $ar_info->{$name} = {
+                                          offset => $4,
+                                          size => $5,
+                                  };
+                          }
+                  }
+                  close(F);
+                  if (!$control_tar_gz || !$ar_info->{$control_tar_gz}) {
+                          warn "$file: No control.tar.gz found\n";
+                          return undef;
+                  }
+                  my $ctrl_tar = $ar_info->{$control_tar_gz};
+                  my $ctrl = parse_control($file, $ctrl_tar->{offset}, $ctrl_tar->{size});
+                  return undef unless $ctrl;
+                  for my $k (keys %$ctrl) {
+                          $info->{lc($k)} = $ctrl->{$k};
+                  }
+                  $info->{package} = $ctrl->{Package} if $ctrl->{Package};
+                  $info->{version} = $ctrl->{Version} if $ctrl->{Version};
+                  $info->{architecture} = $ctrl->{Architecture} if $ctrl->{Architecture};
+                  $info->{filename} = basename($file);
+                  return $info;
+          }
+
+          eval {
+                  require Digest::MD5;
+                  Digest::Perl::MD5->import();
+                  *Digest::MD5::new = \&Digest::Perl::MD5::new;
+          };
+          if ($@) {
+                  die "MD5 support not available. Please install Digest::MD5 or Digest::Perl::MD5\n";
+          }
+
+          my $dir = shift || ".";
+          opendir(D, $dir) or die "Cannot open directory $dir: $!\n";
+          my @files = grep { /\.ipk$/ } readdir(D);
+          closedir(D);
+          for my $file (sort @files) {
+                  my $info = ipkg_info("$dir/$file");
+                  next unless $info;
+                  my $pkg = $info->{package};
+                  my $ver = $info->{version};
+                  my $arch = $info->{architecture};
+                  if ($packages->{$pkg}->{$arch}->{$ver}) {
+                          warn "Duplicate package $pkg $ver $arch\n";
+                          next;
+                  }
+                  $packages->{$pkg}->{$arch}->{$ver} = $info;
+          }
+          for my $pkg (sort keys %$packages) {
+                  for my $arch (sort keys %{$packages->{$pkg}}) {
+                          for my $ver (sort keys %{$packages->{$pkg}->{$arch}}) {
+                                  my $info = $packages->{$pkg}->{$arch}->{$ver};
+                                  print "Package: $info->{package}\n";
+                                  print "Version: $info->{version}\n";
+                                  print "Architecture: $info->{architecture}\n" if $info->{architecture};
+                                  print "Maintainer: $info->{maintainer}\n" if $info->{maintainer};
+                                  print "Depends: $info->{depends}\n" if $info->{depends};
+                                  print "Provides: $info->{provides}\n" if $info->{provides};
+                                  print "Source: $info->{source}\n" if $info->{source};
+                                  print "Section: $info->{section}\n" if $info->{section};
+                                  print "Priority: $info->{priority}\n" if $info->{priority};
+                                  print "Description: $info->{description}\n" if $info->{description};
+                                  print "Size: $info->{size}\n" if $info->{size};
+                                  print "MD5Sum: $info->{md5sum}\n" if $info->{md5sum};
+                                  print "Filename: $info->{filename}\n" if $info->{filename};
+                                  print "\n";
+                          }
+                  }
+          }
+          EOF
+
+          # 给脚本加可执行权限
+          chmod +x /usr/local/bin/ipkg-make-index
+          
+          # 遍历架构目录生成索引
+          for arch_dir in ./opkg-repo/tmp/*; do
+            if [ -d "$arch_dir" ]; then
+              arch=$(basename "$arch_dir")
+              mkdir -p ./opkg-repo/packages/$arch
+              mv $arch_dir/*.ipk ./opkg-repo/packages/$arch/ 2>/dev/null || true
+              
+              if ls ./opkg-repo/packages/$arch/*.ipk 1> /dev/null 2>&1; then
+                cd ./opkg-repo/packages/$arch
+                ipkg-make-index . > Packages
+                gzip -c Packages > Packages.gz
+                cd -
+              fi
             fi
-          fi
-        done
-      shell: /usr/bin/bash -e {0}
+          done
+        shell: /usr/bin/bash -e {0}
 
-    # 4. 上传完整的OPKG源作为工件
-    - name: Upload full opkg repository
-      uses: actions/upload-artifact@v4
-      with:
-        name: opkg-repository
-        path: ./opkg-repo
+      # 4. 上传完整OPKG源
+      - name: Upload full opkg repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: opkg-repository
+          path: ./opkg-repo
 
-    # 5. 发布OPKG源到GitHub Release
-    - name: Publish opkg repo to release
-      uses: ncipollo/release-action@v1
-      with:
-        name: ${{ github.ref_name || 'Manual Build' }}
-        token: ${{ secrets.GITHUB_TOKEN }}
-        allowUpdates: true
-        replacesArtifacts: false  # 保留原有单个ipk，不覆盖
-        artifacts: |
-          ./opkg-repo/**/*
-          # 保留原有单个ipk的发布（兼容旧用法）
-          ./opkg-repo/tmp/*/*.ipk
-        tag: ${{ github.ref_name || 'manual-build' }}
-        body: |
-          ## 📦 OPKG源使用方法（无需区分架构）
-          1. 添加源到OpenWRT的/etc/opkg/customfeeds.conf：
+      # 5. 发布到GitHub Release
+      - name: Publish opkg repo to release
+        uses: ncipollo/release-action@v1
+        with:
+          name: ${{ github.ref_name || 'Manual Build' }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
+          replacesArtifacts: false
+          artifacts: |
+            ./opkg-repo/**/*
+            ./opkg-repo/tmp/*/*.ipk
+          tag: ${{ github.ref_name || 'manual-build' }}
+          body: |
+            ## 📦 OPKG源使用方法（无需区分架构）
+            1. 添加源到/etc/opkg/customfeeds.conf：
