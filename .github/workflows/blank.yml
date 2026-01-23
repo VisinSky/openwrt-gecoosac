@@ -67,89 +67,78 @@ jobs:
           cd bin/packages/${{ matrix.arch }}/packages_ci
           
           # 创建Python脚本生成索引
-          cat > generate_packages.py << 'EOF'
-import os
-import gzip
-import hashlib
-
-def generate_packages_index():
-    packages = []
-    
-    for filename in os.listdir('.'):
-        if not filename.endswith('.ipk'):
-            continue
-        
-        # 计算文件哈希
-        with open(filename, 'rb') as f:
-            content = f.read()
-            file_size = len(content)
-            md5_hash = hashlib.md5(content).hexdigest()
-            sha256_hash = hashlib.sha256(content).hexdigest()
-        
-        # 解析包名
-        basename = filename[:-4]  # 移除 .ipk
-        parts = basename.split('_')
-        
-        # 尝试解析包信息
-        if len(parts) >= 3:
-            # 假设格式为: name_version_architecture.ipk
-            package_name = '_'.join(parts[:-2])
-            version = parts[-2]
-            architecture = parts[-1]
-        else:
-            # 如果解析失败，使用默认值
-            package_name = basename
-            version = '1.0-1'
-            architecture = os.environ.get('MATRIX_ARCH', 'unknown').split('_')[0]
-        
-        # GitHub Release下载URL
-        release_name = os.environ.get('RELEASE_NAME', 'latest')
-        repo_owner = os.environ.get('REPO_OWNER', 'unknown')
-        repo_name = os.environ.get('REPO_NAME', 'unknown')
-        
-        download_url = f"https://github.com/{repo_owner}/{repo_name}/releases/download/{release_name}/{filename}"
-        
-        # 构建包信息
-        package_info = f"""Package: {package_name}
-Version: {version}
-Depends: libc
-Source: {repo_name}
-SourceName: {package_name}
-Section: luci
-Architecture: {architecture}
-Installed-Size: {file_size}
-Filename: {filename}
-Size: {file_size}
-MD5Sum: {md5_hash}
-SHA256sum: {sha256_hash}
-Description: {package_name} - OpenWrt package
-License: Unknown
-Maintainer: Auto Build <auto@build.com>
-
-"""
-        packages.append(package_info)
-    
-    # 写入Packages文件
-    with open('Packages', 'w') as f:
-        for pkg in packages:
-            f.write(pkg)
-    
-    # 创建压缩版本
-    with open('Packages', 'rb') as f_in:
-        with gzip.open('Packages.gz', 'wb', compresslevel=9) as f_out:
-            f_out.write(f_in.read())
-    
-    print(f"Generated Packages index with {len(packages)} packages")
-
-if __name__ == '__main__':
-    generate_packages_index()
-EOF
-
-          RELEASE_NAME="${{ github.ref_name || 'latest' }}"
-          REPO_OWNER="${{ github.repository_owner }}"
-          REPO_NAME="${{ github.event.repository.name }}"
+          echo 'import os' > generate_packages.py
+          echo 'import gzip' >> generate_packages.py
+          echo 'import hashlib' >> generate_packages.py
+          
+          echo 'def generate_packages_index():' >> generate_packages.py
+          echo '    packages = []' >> generate_packages.py
+          echo '    ' >> generate_packages.py
+          echo '    for filename in os.listdir("."):' >> generate_packages.py
+          echo '        if not filename.endswith(".ipk"):' >> generate_packages.py
+          echo '            continue' >> generate_packages.py
+          echo '        ' >> generate_packages.py
+          echo '        with open(filename, "rb") as f:' >> generate_packages.py
+          echo '            content = f.read()' >> generate_packages.py
+          echo '            file_size = len(content)' >> generate_packages.py
+          echo '            md5_hash = hashlib.md5(content).hexdigest()' >> generate_packages.py
+          echo '            sha256_hash = hashlib.sha256(content).hexdigest()' >> generate_packages.py
+          echo '        ' >> generate_packages.py
+          echo '        basename = filename[:-4]' >> generate_packages.py
+          echo '        parts = basename.split("_")' >> generate_packages.py
+          echo '        ' >> generate_packages.py
+          echo '        if len(parts) >= 3:' >> generate_packages.py
+          echo '            package_name = "_".join(parts[:-2])' >> generate_packages.py
+          echo '            version = parts[-2]' >> generate_packages.py
+          echo '            architecture = parts[-1]' >> generate_packages.py
+          echo '        else:' >> generate_packages.py
+          echo '            package_name = basename' >> generate_packages.py
+          echo '            version = "1.0-1"' >> generate_packages.py
+          echo '            architecture = "'${{ matrix.arch }}'".split("_")[0]' >> generate_packages.py
+          echo '        ' >> generate_packages.py
+          echo '        release_name = "'${{ github.ref_name || 'latest' }}'"' >> generate_packages.py
+          echo '        repo_owner = "'${{ github.repository_owner }}'"' >> generate_packages.py
+          echo '        repo_name = "'${{ github.event.repository.name }}'"' >> generate_packages.py
+          echo '        ' >> generate_packages.py
+          echo '        if release_name != "latest":' >> generate_packages.py
+          echo '            download_url = f"https://github.com/{repo_owner}/{repo_name}/releases/download/{release_name}/{filename}"' >> generate_packages.py
+          echo '        else:' >> generate_packages.py
+          echo '            download_url = f"https://github.com/{repo_owner}/{repo_name}/releases/latest/download/{filename}"' >> generate_packages.py
+          echo '        ' >> generate_packages.py
+          echo '        package_info = f"""Package: {package_name}' >> generate_packages.py
+          echo 'Version: {version}' >> generate_packages.py
+          echo 'Depends: libc' >> generate_packages.py
+          echo 'Source: {repo_name}' >> generate_packages.py
+          echo 'SourceName: {package_name}' >> generate_packages.py
+          echo 'Section: luci' >> generate_packages.py
+          echo 'Architecture: {architecture}' >> generate_packages.py
+          echo 'Installed-Size: {file_size}' >> generate_packages.py
+          echo 'Filename: {filename}' >> generate_packages.py
+          echo 'Size: {file_size}' >> generate_packages.py
+          echo 'MD5Sum: {md5_hash}' >> generate_packages.py
+          echo 'SHA256sum: {sha256_hash}' >> generate_packages.py
+          echo 'Description: {package_name} - OpenWrt package' >> generate_packages.py
+          echo 'License: Unknown' >> generate_packages.py
+          echo 'Maintainer: Auto Build <auto@build.com>' >> generate_packages.py
+          echo '' >> generate_packages.py
+          echo '"""' >> generate_packages.py
+          echo '        packages.append(package_info)' >> generate_packages.py
+          echo '    ' >> generate_packages.py
+          echo '    with open("Packages", "w") as f:' >> generate_packages.py
+          echo '        for pkg in packages:' >> generate_packages.py
+          echo '            f.write(pkg)' >> generate_packages.py
+          echo '    ' >> generate_packages.py
+          echo '    with open("Packages", "rb") as f_in:' >> generate_packages.py
+          echo '        with gzip.open("Packages.gz", "wb", compresslevel=9) as f_out:' >> generate_packages.py
+          echo '            f_out.write(f_in.read())' >> generate_packages.py
+          echo '    ' >> generate_packages.py
+          echo '    print(f"Generated Packages index with {len(packages)} packages")' >> generate_packages.py
+          echo '' >> generate_packages.py
+          echo 'if __name__ == "__main__":' >> generate_packages.py
+          echo '    generate_packages_index()' >> generate_packages.py
           
           python3 generate_packages.py
+          rm generate_packages.py
 
       - name: Upload to artifacts
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
@@ -161,16 +150,17 @@ EOF
 
       - name: Upload to GitHub Release
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
-        uses: softprops/action-gh-release@v1
+        uses: ncipollo/release-action@v1
         with:
-          tag_name: ${{ github.ref_name || 'latest' }}
-          files: |
+          name: ${{ github.ref_name || 'Manual Build' }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
+          replacesArtifacts: true
+          artifacts: |
             bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
             bin/packages/${{ matrix.arch }}/packages_ci/Packages
             bin/packages/${{ matrix.arch }}/packages_ci/Packages.gz
-          draft: false
-          prerelease: false
-          generate_release_notes: true
+          tag: ${{ github.ref_name || 'manual-build' }}
 
   create-instructions:
     name: Create Usage Instructions
@@ -179,48 +169,136 @@ EOF
     if: always()
     
     steps:
-      - name: Generate usage instructions
+      - name: Create usage instructions
         run: |
           mkdir -p instructions
           
-          # 创建简化的README
-          cat > instructions/README.md << 'EOF'
-# OpenWrt 软件包仓库
+          # 使用echo命令逐行创建README.md，避免多行字符串问题
+          echo "# OpenWrt 软件包仓库" > instructions/README.md
+          echo "" >> instructions/README.md
+          echo "本仓库提供 OpenWrt 软件包的自动构建和发布。" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "## 支持的架构" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "- aarch64_cortex-a53" >> instructions/README.md
+          echo "- aarch64_cortex-a72" >> instructions/README.md
+          echo "- aarch64_generic" >> instructions/README.md
+          echo "- arm_arm1176jzf-s_vfp" >> instructions/README.md
+          echo "- arm_arm926ej-s" >> instructions/README.md
+          echo "- arm_cortex-a15_neon-vfpv4" >> instructions/README.md
+          echo "- arm_cortex-a5_vfpv4" >> instructions/README.md
+          echo "- arm_cortex-a7" >> instructions/README.md
+          echo "- arm_cortex-a7_neon-vfpv4" >> instructions/README.md
+          echo "- arm_cortex-a8_vfpv3" >> instructions/README.md
+          echo "- arm_cortex-a9" >> instructions/README.md
+          echo "- arm_cortex-a9_neon" >> instructions/README.md
+          echo "- arm_cortex-a9_vfpv3-d16" >> instructions/README.md
+          echo "- arm_fa526" >> instructions/README.md
+          echo "- arm_xscale" >> instructions/README.md
+          echo "- i386_pentium-mmx" >> instructions/README.md
+          echo "- i386_pentium4" >> instructions/README.md
+          echo "- mips64_octeonplus" >> instructions/README.md
+          echo "- mips_24kc" >> instructions/README.md
+          echo "- mips_4kec" >> instructions/README.md
+          echo "- mips_mips32" >> instructions/README.md
+          echo "- mipsel_24kc_24kf" >> instructions/README.md
+          echo "- mipsel_74kc" >> instructions/README.md
+          echo "- mipsel_mips32" >> instructions/README.md
+          echo "- x86_64" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "## 使用方法" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "### 方法一：通过 opkg 源安装（推荐）" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "1. 在 OpenWrt 路由器上编辑 opkg 配置文件：" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo '```bash' >> instructions/README.md
+          echo "echo \"src/gz myrepo https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name || 'latest' }}\" >> /etc/opkg/customfeeds.conf" >> instructions/README.md
+          echo '```' >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "2. 更新软件源并安装：" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo '```bash' >> instructions/README.md
+          echo "opkg update" >> instructions/README.md
+          echo "opkg install luci-app-gecoosac" >> instructions/README.md
+          echo '```' >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "### 方法二：手动安装" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "1. 从 Release 页面下载对应架构的 .ipk 文件" >> instructions/README.md
+          echo "2. 通过 SSH 上传到路由器" >> instructions/README.md
+          echo "3. 安装：" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo '```bash' >> instructions/README.md
+          echo "opkg install /path/to/luci-app-gecoosac_*.ipk" >> instructions/README.md
+          echo '```' >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "## 常见问题" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "### 1. 如何确定路由器的架构？" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo '```bash' >> instructions/README.md
+          echo "opkg print-architecture" >> instructions/README.md
+          echo '```' >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "### 2. 如果遇到证书错误" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo '```bash' >> instructions/README.md
+          echo "opkg install ca-bundle" >> instructions/README.md
+          echo '```' >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "### 3. 如果无法访问 GitHub" >> instructions/README.md
+          echo "如果路由器无法访问 GitHub，可以尝试：" >> instructions/README.md
+          echo "1. 使用代理" >> instructions/README.md
+          echo "2. 将文件下载到本地，然后上传到路由器安装" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "### 4. 更新软件" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo '```bash' >> instructions/README.md
+          echo "opkg update" >> instructions/README.md
+          echo "opkg upgrade luci-app-gecoosac" >> instructions/README.md
+          echo '```' >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "## 开发说明" >> instructions/README.md
+          echo "本仓库使用 GitHub Actions 自动构建，当推送标签（如 v1.0.0）时会自动触发构建。" >> instructions/README.md
+          echo "" >> instructions/README.md
+          echo "## 许可证" >> instructions/README.md
+          echo "本软件包基于相应开源许可证发布。" >> instructions/README.md
+          
+          # 创建安装脚本
+          echo '#!/bin/sh' > instructions/INSTALL.sh
+          echo '# OpenWrt 安装脚本' >> instructions/INSTALL.sh
+          echo '' >> instructions/INSTALL.sh
+          echo 'set -e' >> instructions/INSTALL.sh
+          echo '' >> instructions/INSTALL.sh
+          echo 'echo "正在设置 OpenWrt 软件源..."' >> instructions/INSTALL.sh
+          echo '' >> instructions/INSTALL.sh
+          echo '# 添加软件源' >> instructions/INSTALL.sh
+          echo 'FEED_FILE="/etc/opkg/customfeeds.conf"' >> instructions/INSTALL.sh
+          echo 'FEED_URL="https://github.com/'${{ github.repository }}/releases/download/${{ github.ref_name || 'latest' }}'"' >> instructions/INSTALL.sh
+          echo '' >> instructions/INSTALL.sh
+          echo 'echo "添加软件源: ${FEED_URL}"' >> instructions/INSTALL.sh
+          echo 'echo "src/gz custom ${FEED_URL}" >> "${FEED_FILE}"' >> instructions/INSTALL.sh
+          echo '' >> instructions/INSTALL.sh
+          echo '# 更新并安装' >> instructions/INSTALL.sh
+          echo 'echo "更新软件源..."' >> instructions/INSTALL.sh
+          echo 'opkg update' >> instructions/INSTALL.sh
+          echo '' >> instructions/INSTALL.sh
+          echo 'echo "安装 luci-app-gecoosac..."' >> instructions/INSTALL.sh
+          echo 'opkg install luci-app-gecoosac' >> instructions/INSTALL.sh
+          echo '' >> instructions/INSTALL.sh
+          echo 'echo "安装完成！"' >> instructions/INSTALL.sh
+          
+          chmod +x instructions/INSTALL.sh
+          
+          echo "使用说明已生成"
 
-本仓库提供 OpenWrt 软件包的自动构建和发布。
-
-## 支持的架构
-- aarch64_cortex-a53
-- aarch64_cortex-a72
-- aarch64_generic
-- arm_arm1176jzf-s_vfp
-- arm_arm926ej-s
-- arm_cortex-a15_neon-vfpv4
-- arm_cortex-a5_vfpv4
-- arm_cortex-a7
-- arm_cortex-a7_neon-vfpv4
-- arm_cortex-a8_vfpv3
-- arm_cortex-a9
-- arm_cortex-a9_neon
-- arm_cortex-a9_vfpv3-d16
-- arm_fa526
-- arm_xscale
-- i386_pentium-mmx
-- i386_pentium4
-- mips64_octeonplus
-- mips_24kc
-- mips_4kec
-- mips_mips32
-- mipsel_24kc_24kf
-- mipsel_74kc
-- mipsel_mips32
-- x86_64
-
-## 使用方法
-
-### 方法一：通过 opkg 源安装（推荐）
-
-1. 在 OpenWrt 路由器上编辑 opkg 配置文件：
-
-```bash
-echo "src/gz myrepo https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name || 'latest' }}" >> /etc/opkg/customfeeds.conf
+      - name: Upload instructions to Release
+        uses: ncipollo/release-action@v1
+        with:
+          name: ${{ github.ref_name || 'Manual Build' }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
+          replacesArtifacts: false
+          artifacts: instructions/*
+          tag: ${{ github.ref_name || 'manual-build' }}
