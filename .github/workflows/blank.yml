@@ -64,13 +64,11 @@ jobs:
       - name: Generate Packages index
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         run: |
-          # 检查目录是否存在，避免cd失败
           PACKAGE_DIR="bin/packages/${{ matrix.arch }}/packages_ci"
           if [ ! -d "$PACKAGE_DIR" ]; then
             echo "错误：编译产物目录不存在，跳过索引生成"
             exit 0
           fi
-          
           cd "$PACKAGE_DIR"
           
           # 定义变量避免YAML解析冲突
@@ -79,7 +77,7 @@ jobs:
           REPOSITORY_OWNER="${{ github.repository_owner }}"
           REPOSITORY_NAME="${{ github.event.repository.name }}"
           
-          # 分步生成Python脚本（完全避开三重引号，改用字符串拼接）
+          # 逐行生成Python脚本（无三重引号、无特殊字符冲突）
           echo "import os" > generate_packages.py
           echo "import gzip" >> generate_packages.py
           echo "import hashlib" >> generate_packages.py
@@ -119,22 +117,21 @@ jobs:
           echo "        else:" >> generate_packages.py
           echo "            download_url = f\"https://github.com/{repo_owner}/{repo_name}/releases/latest/download/{arch}/{filename}\"" >> generate_packages.py
           echo "" >> generate_packages.py
-          # 关键：改用字符串拼接替代三重引号，避免YAML解析冲突
-          echo "        package_info = (\"Package: \" + package_name + \"\\n\"" >> generate_packages.py
-          echo "                       + \"Version: \" + version + \"\\n\"" >> generate_packages.py
-          echo "                       + \"Depends: libc\\n\"" >> generate_packages.py
-          echo "                       + \"Source: \" + repo_name + \"\\n\"" >> generate_packages.py
-          echo "                       + \"SourceName: \" + package_name + \"\\n\"" >> generate_packages.py
-          echo "                       + \"Section: luci\\n\"" >> generate_packages.py
-          echo "                       + \"Architecture: \" + architecture + \"\\n\"" >> generate_packages.py
-          echo "                       + \"Installed-Size: \" + str(file_size_kb) + \"\\n\"" >> generate_packages.py
-          echo "                       + \"Filename: \" + arch + \"/\" + filename + \"\\n\"" >> generate_packages.py
-          echo "                       + \"Size: \" + str(file_size_bytes) + \"\\n\"" >> generate_packages.py
-          echo "                       + \"MD5Sum: \" + md5_hash + \"\\n\"" >> generate_packages.py
-          echo "                       + \"SHA256sum: \" + sha256_hash + \"\\n\"" >> generate_packages.py
-          echo "                       + \"Description: \" + package_name + \" - OpenWrt package\\n\"" >> generate_packages.py
-          echo "                       + \"License: Unknown\\n\"" >> generate_packages.py
-          echo "                       + \"Maintainer: Auto Build <auto@build.com>\\n\\n\")" >> generate_packages.py
+          echo "        package_info = \"Package: \" + package_name + \"\\n\"" >> generate_packages.py
+          echo "        package_info += \"Version: \" + version + \"\\n\"" >> generate_packages.py
+          echo "        package_info += \"Depends: libc\\n\"" >> generate_packages.py
+          echo "        package_info += \"Source: \" + repo_name + \"\\n\"" >> generate_packages.py
+          echo "        package_info += \"SourceName: \" + package_name + \"\\n\"" >> generate_packages.py
+          echo "        package_info += \"Section: luci\\n\"" >> generate_packages.py
+          echo "        package_info += \"Architecture: \" + architecture + \"\\n\"" >> generate_packages.py
+          echo "        package_info += \"Installed-Size: \" + str(file_size_kb) + \"\\n\"" >> generate_packages.py
+          echo "        package_info += \"Filename: \" + arch + \"/\" + filename + \"\\n\"" >> generate_packages.py
+          echo "        package_info += \"Size: \" + str(file_size_bytes) + \"\\n\"" >> generate_packages.py
+          echo "        package_info += \"MD5Sum: \" + md5_hash + \"\\n\"" >> generate_packages.py
+          echo "        package_info += \"SHA256sum: \" + sha256_hash + \"\\n\"" >> generate_packages.py
+          echo "        package_info += \"Description: \" + package_name + \" - OpenWrt package\\n\"" >> generate_packages.py
+          echo "        package_info += \"License: Unknown\\n\"" >> generate_packages.py
+          echo "        package_info += \"Maintainer: Auto Build <auto@build.com>\\n\\n\"" >> generate_packages.py
           echo "" >> generate_packages.py
           echo "        packages.append(package_info)" >> generate_packages.py
           echo "" >> generate_packages.py
@@ -151,7 +148,6 @@ jobs:
           echo "if __name__ == \"__main__\":" >> generate_packages.py
           echo "    generate_packages_index()" >> generate_packages.py
           
-          # 执行并清理脚本
           python3 generate_packages.py
           rm generate_packages.py
 
@@ -163,14 +159,13 @@ jobs:
           path: bin/packages/${{ matrix.arch }}/packages_ci/
           retention-days: 7
 
-      - name: Prepare Release files (按架构分目录)
+      - name: Prepare Release files
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         run: |
-          # 创建架构专属目录，避免文件覆盖
           mkdir -p release/${{ matrix.arch }}
           cp -r bin/packages/${{ matrix.arch }}/packages_ci/* release/${{ matrix.arch }}/
 
-      - name: Upload to GitHub Release (追加模式)
+      - name: Upload to GitHub Release
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         uses: ncipollo/release-action@v1
         with:
@@ -182,23 +177,20 @@ jobs:
           tag: ${{ github.ref_name || 'manual-build' }}
           omitBodyDuringUpdate: true
 
+  # --------------- create-instructions 任务（完全修复缩进/语法）---------------
   create-instructions:
     name: Create Usage Instructions
     runs-on: ubuntu-latest
     needs: build
-    # 修复：简化条件表达式，符合GitHub Actions规范（去掉多余括号，统一逻辑）
     if: ${{ needs.build.result != 'cancelled' }}
-    
     steps:
       - name: Create usage instructions
         run: |
           mkdir -p instructions
-          
-          # 定义变量避免YAML解析冲突
           TAG_NAME="${{ github.ref_name || 'manual-build' }}"
           REPO="${{ github.repository }}"
           
-          # 生成README.md（修复opkg源URL，EOF顶格）
+          # 生成README.md（EOF严格顶格，无特殊字符）
           cat > instructions/README.md <<EOF
 # OpenWrt 软件包仓库
 本仓库提供 OpenWrt 软件包的自动构建和发布。
@@ -240,7 +232,6 @@ echo "你的路由器架构：\$ARCH"
 
 2. 添加对应架构的软件源：
 \`\`\`bash
-# 替换 \$ARCH 为实际架构（如 x86_64）
 echo "src/gz myrepo https://github.com/${REPO}/releases/download/${TAG_NAME}/\$ARCH" >> /etc/opkg/customfeeds.conf
 \`\`\`
 
@@ -269,10 +260,9 @@ opkg print-architecture
 opkg install ca-bundle
 \`\`\`
 
-### 3. 如果无法访问 GitHub
-如果路由器无法访问 GitHub，可以尝试：
-1. 使用代理
-2. 将文件下载到本地，然后上传到路由器安装
+### 3. 无法访问 GitHub？
+- 使用代理转发路由器网络
+- 手动下载IPK文件上传安装
 
 ### 4. 更新软件
 \`\`\`bash
@@ -281,47 +271,31 @@ opkg upgrade luci-app-gecoosac
 \`\`\`
 
 ## 开发说明
-本仓库使用 GitHub Actions 自动构建，当推送标签（如 v1.0.0）时会自动触发构建。
-
-## 许可证
-本软件包基于相应开源许可证发布。
+推送v*标签或手动触发Workflow可自动构建所有/指定架构包。
 EOF
           
-          # 生成安装脚本（EOF顶格）
+          # 生成安装脚本（EOF严格顶格）
           cat > instructions/INSTALL.sh <<EOF
 #!/bin/sh
-# OpenWrt 安装脚本
 set -e
-
-echo "正在设置 OpenWrt 软件源..."
-
-# 获取路由器架构
-ARCH=\$(opkg print-architecture | grep 'arch' | awk '{print \$2}')
+echo "=== 自动安装 luci-app-gecoosac ==="
+# 检测架构
+ARCH=\$(opkg print-architecture | grep -m1 'arch' | awk '{print \$2}')
 if [ -z "\$ARCH" ]; then
-  echo "错误：无法检测路由器架构"
+  echo "错误：无法检测路由器架构！"
   exit 1
 fi
-echo "检测到路由器架构：\$ARCH"
-
-# 添加软件源
-FEED_FILE="/etc/opkg/customfeeds.conf"
+echo "检测到架构：\$ARCH"
+# 添加源
 FEED_URL="https://github.com/${REPO}/releases/download/${TAG_NAME}/\$ARCH"
-
-echo "添加软件源: \${FEED_URL}"
-echo "src/gz custom \${FEED_URL}" >> "\${FEED_FILE}"
-
-# 更新并安装
-echo "更新软件源..."
-opkg update
-
-echo "安装 luci-app-gecoosac..."
-opkg install luci-app-gecoosac
-
-echo "安装完成！"
+echo "添加软件源：\$FEED_URL"
+echo "src/gz custom \$FEED_URL" >> /etc/opkg/customfeeds.conf
+# 安装
+opkg update && opkg install luci-app-gecoosac
+echo "=== 安装完成 ==="
 EOF
           
           chmod +x instructions/INSTALL.sh
-          echo "使用说明已生成"
 
       - name: Upload instructions to Release
         uses: ncipollo/release-action@v1
