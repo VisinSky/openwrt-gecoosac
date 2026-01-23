@@ -79,81 +79,79 @@ jobs:
           REPOSITORY_OWNER="${{ github.repository_owner }}"
           REPOSITORY_NAME="${{ github.event.repository.name }}"
           
-          # 创建Python脚本生成索引（完全避免在YAML中嵌入${{ }}）
-          cat > generate_packages.py << EOF
-import os
-import gzip
-import hashlib
-
-def generate_packages_index():
-    packages = []
-    arch = "$MATRIX_ARCH"
-    release_name = "$GITHUB_REF_NAME"
-    repo_owner = "$REPOSITORY_OWNER"
-    repo_name = "$REPOSITORY_NAME"
-
-    for filename in os.listdir("."):
-        if not filename.endswith(".ipk"):
-            continue
-
-        with open(filename, "rb") as f:
-            content = f.read()
-            file_size_bytes = len(content)
-            file_size_kb = file_size_bytes // 1024  # OpenWrt规范：Installed-Size用KB
-            md5_hash = hashlib.md5(content).hexdigest()
-            sha256_hash = hashlib.sha256(content).hexdigest()
-
-        basename = filename[:-4]
-        parts = basename.split("_")
-
-        if len(parts) >= 3:
-            package_name = "_".join(parts[:-2])
-            version = parts[-2]
-            architecture = parts[-1]
-        else:
-            package_name = basename
-            version = "1.0-1"
-            architecture = arch  # 使用完整架构名
-
-        # 修正下载URL（包含架构路径）
-        if release_name != "latest":
-            download_url = f"https://github.com/{repo_owner}/{repo_name}/releases/download/{release_name}/{arch}/{filename}"
-        else:
-            download_url = f"https://github.com/{repo_owner}/{repo_name}/releases/latest/download/{arch}/{filename}"
-
-        package_info = f"""Package: {package_name}
-Version: {version}
-Depends: libc
-Source: {repo_name}
-SourceName: {package_name}
-Section: luci
-Architecture: {architecture}
-Installed-Size: {file_size_kb}
-Filename: {arch}/{filename}
-Size: {file_size_bytes}
-MD5Sum: {md5_hash}
-SHA256sum: {sha256_hash}
-Description: {package_name} - OpenWrt package
-License: Unknown
-Maintainer: Auto Build <auto@build.com>
-
-"""
-        packages.append(package_info)
-
-    with open("Packages", "w") as f:
-        for pkg in packages:
-            f.write(pkg)
-
-    with open("Packages", "rb") as f_in:
-        with gzip.open("Packages.gz", "wb", compresslevel=9) as f_out:
-            f_out.write(f_in.read())
-
-    print(f"Generated Packages index with {len(packages)} packages")
-
-if __name__ == "__main__":
-    generate_packages_index()
-EOF
+          # 分步生成Python脚本（完全避开三重引号，改用字符串拼接）
+          echo "import os" > generate_packages.py
+          echo "import gzip" >> generate_packages.py
+          echo "import hashlib" >> generate_packages.py
+          echo "" >> generate_packages.py
+          echo "def generate_packages_index():" >> generate_packages.py
+          echo "    packages = []" >> generate_packages.py
+          echo "    arch = \"$MATRIX_ARCH\"" >> generate_packages.py
+          echo "    release_name = \"$GITHUB_REF_NAME\"" >> generate_packages.py
+          echo "    repo_owner = \"$REPOSITORY_OWNER\"" >> generate_packages.py
+          echo "    repo_name = \"$REPOSITORY_NAME\"" >> generate_packages.py
+          echo "" >> generate_packages.py
+          echo "    for filename in os.listdir(\".\"):" >> generate_packages.py
+          echo "        if not filename.endswith(\".ipk\"):" >> generate_packages.py
+          echo "            continue" >> generate_packages.py
+          echo "" >> generate_packages.py
+          echo "        with open(filename, \"rb\") as f:" >> generate_packages.py
+          echo "            content = f.read()" >> generate_packages.py
+          echo "            file_size_bytes = len(content)" >> generate_packages.py
+          echo "            file_size_kb = file_size_bytes // 1024" >> generate_packages.py
+          echo "            md5_hash = hashlib.md5(content).hexdigest()" >> generate_packages.py
+          echo "            sha256_hash = hashlib.sha256(content).hexdigest()" >> generate_packages.py
+          echo "" >> generate_packages.py
+          echo "        basename = filename[:-4]" >> generate_packages.py
+          echo "        parts = basename.split(\"_\")" >> generate_packages.py
+          echo "" >> generate_packages.py
+          echo "        if len(parts) >= 3:" >> generate_packages.py
+          echo "            package_name = \"_\".join(parts[:-2])" >> generate_packages.py
+          echo "            version = parts[-2]" >> generate_packages.py
+          echo "            architecture = parts[-1]" >> generate_packages.py
+          echo "        else:" >> generate_packages.py
+          echo "            package_name = basename" >> generate_packages.py
+          echo "            version = \"1.0-1\"" >> generate_packages.py
+          echo "            architecture = arch" >> generate_packages.py
+          echo "" >> generate_packages.py
+          echo "        if release_name != \"latest\":" >> generate_packages.py
+          echo "            download_url = f\"https://github.com/{repo_owner}/{repo_name}/releases/download/{release_name}/{arch}/{filename}\"" >> generate_packages.py
+          echo "        else:" >> generate_packages.py
+          echo "            download_url = f\"https://github.com/{repo_owner}/{repo_name}/releases/latest/download/{arch}/{filename}\"" >> generate_packages.py
+          echo "" >> generate_packages.py
+          # 关键：改用字符串拼接替代三重引号，避免YAML解析冲突
+          echo "        package_info = (\"Package: \" + package_name + \"\\n\"" >> generate_packages.py
+          echo "                       + \"Version: \" + version + \"\\n\"" >> generate_packages.py
+          echo "                       + \"Depends: libc\\n\"" >> generate_packages.py
+          echo "                       + \"Source: \" + repo_name + \"\\n\"" >> generate_packages.py
+          echo "                       + \"SourceName: \" + package_name + \"\\n\"" >> generate_packages.py
+          echo "                       + \"Section: luci\\n\"" >> generate_packages.py
+          echo "                       + \"Architecture: \" + architecture + \"\\n\"" >> generate_packages.py
+          echo "                       + \"Installed-Size: \" + str(file_size_kb) + \"\\n\"" >> generate_packages.py
+          echo "                       + \"Filename: \" + arch + \"/\" + filename + \"\\n\"" >> generate_packages.py
+          echo "                       + \"Size: \" + str(file_size_bytes) + \"\\n\"" >> generate_packages.py
+          echo "                       + \"MD5Sum: \" + md5_hash + \"\\n\"" >> generate_packages.py
+          echo "                       + \"SHA256sum: \" + sha256_hash + \"\\n\"" >> generate_packages.py
+          echo "                       + \"Description: \" + package_name + \" - OpenWrt package\\n\"" >> generate_packages.py
+          echo "                       + \"License: Unknown\\n\"" >> generate_packages.py
+          echo "                       + \"Maintainer: Auto Build <auto@build.com>\\n\\n\")" >> generate_packages.py
+          echo "" >> generate_packages.py
+          echo "        packages.append(package_info)" >> generate_packages.py
+          echo "" >> generate_packages.py
+          echo "    with open(\"Packages\", \"w\") as f:" >> generate_packages.py
+          echo "        for pkg in packages:" >> generate_packages.py
+          echo "            f.write(pkg)" >> generate_packages.py
+          echo "" >> generate_packages.py
+          echo "    with open(\"Packages\", \"rb\") as f_in:" >> generate_packages.py
+          echo "        with gzip.open(\"Packages.gz\", \"wb\", compresslevel=9) as f_out:" >> generate_packages.py
+          echo "            f_out.write(f_in.read())" >> generate_packages.py
+          echo "" >> generate_packages.py
+          echo "    print(f\"Generated Packages index with {len(packages)} packages\")" >> generate_packages.py
+          echo "" >> generate_packages.py
+          echo "if __name__ == \"__main__\":" >> generate_packages.py
+          echo "    generate_packages_index()" >> generate_packages.py
           
+          # 执行并清理脚本
           python3 generate_packages.py
           rm generate_packages.py
 
