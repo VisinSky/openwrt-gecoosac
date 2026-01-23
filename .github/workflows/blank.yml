@@ -1,64 +1,32 @@
-# 工作流名称：编译OpenWRT插件包（支持opkg更新）
-name: Build packages for OpenWRT (opkg compatible)
+name: Build packages
 
-# 触发条件：标签推送(v开头) 或 手动触发（根节点on）
 on:
   push:
     tags:
-      - v*  # 推送v开头的标签时自动触发
-  workflow_dispatch:  # 手动触发
+      - v*
+  workflow_dispatch:
     inputs:
       arch:
-        description: '指定编译架构（留空编译所有架构）'
+        description: '指定要编译的架构（留空则编译所有架构）'
         required: false
         type: string
         default: ''
 
-# ========== 核心根节点jobs（必选！所有任务必须放在这里面） ==========
 jobs:
-  # 第一阶段：按架构编译插件（jobs的子节点，2空格缩进）
-  build-packages:
+  build:
     name: Build ${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        arch:
-          - aarch64_cortex-a53
-          - aarch64_cortex-a72
-          - aarch64_generic
-          - arm_arm1176jzf-s_vfp
-          - arm_arm926ej-s
-          - arm_cortex-a15_neon-vfpv4
-          - arm_cortex-a5_vfpv4
-          - arm_cortex-a7
-          - arm_cortex-a7_neon-vfpv4
-          - arm_cortex-a8_vfpv3
-          - arm_cortex-a9
-          - arm_cortex-a9_neon
-          - arm_cortex-a9_vfpv3-d16
-          - arm_fa526
-          - arm_xscale
-          - i386_pentium-mmx
-          - i386_pentium4
-          - mips64_octeonplus
-          - mips_24kc
-          - mips_4kec
-          - mips_mips32
-          - mipsel_24kc_24kf
-          - mipsel_74kc
-          - mipsel_mips32
-          - x86_64
+        arch: [x86_64, aarch64_generic]  # 你可以恢复完整的架构列表
 
     steps:
-      # 1. 拉取代码仓库
-      - name: Checkout source code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2. 编译指定架构的插件包
-      - name: Build packages for ${{ matrix.arch }}
+      - name: Building packages
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         uses: sbwml/openwrt-gh-action-sdk@main
         env:
@@ -67,246 +35,218 @@ jobs:
           PACKAGES: luci-app-gecoosac
           NO_REFRESH_CHECK: true
 
-      # 3. 上传单个架构的编译产物
-      - name: Upload single arch artifacts
+      - name: Generate Packages index with GitHub URLs
+        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
+        run: |
+          # 进入包目录
+          cd bin/packages/${{ matrix.arch }}/packages_ci
+          
+          # 确定 Release 名称（标签或手动构建）
+          RELEASE_NAME="${{ github.ref_name || 'manual-build' }}"
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}"
+          
+          echo "Generating Packages index for GitHub release: $RELEASE_NAME"
+          
+          # 生成包含GitHub下载链接的Packages文件
+          python3 << 'EOF'
+import os
+import gzip
+import hashlib
+import json
+
+arch = "${{ matrix.arch }}"
+release_name = "${{ github.ref_name || 'manual-build' }}"
+repo_owner = "${{ github.repository_owner }}"
+repo_name = "${{ github.event.repository.name }}"
+repo_url = f"https://github.com/{repo_owner}/{repo_name}"
+
+packages = []
+for file in os.listdir('.'):
+    if file.endswith('.ipk'):
+        # 读取文件内容用于计算hash
+        with open(file, 'rb') as f:
+            data = f.read()
+            file_size = len(data)
+            md5sum = hashlib.md5(data).hexdigest()
+            sha256sum = hashlib.sha256(data).hexdigest()
+        
+        # 解析文件名获取包信息
+        # 格式示例: luci-app-gecoosac_1.0-1_all.ipk
+        basename = file[:-4]  # 去掉.ipk后缀
+        parts = basename.split('_')
+        
+        if len(parts) >= 3:
+            pkg_name = parts[0]
+            version = parts[1]
+            # 架构信息可能在第二部分或第三部分
+            if len(parts) == 3:
+                architecture = parts[2]
+            else:
+                # 处理类似 luci-app-gecoosac_1.0-1_all_other.ipk 的情况
+                architecture = parts[2] if parts[2] != 'all' else parts[3] if len(parts) > 3 else 'all'
+        else:
+            # 如果解析失败，使用默认值
+            pkg_name = basename
+            version = '1.0'
+            architecture = arch
+        
+        # GitHub下载链接（使用Release中的文件）
+        # GitHub Releases文件的下载链接格式：https://github.com/user/repo/releases/download/tag/filename
+        download_url = f"{repo_url}/releases/download/{release_name}/{file}"
+        
+        # 构建包描述信息
+        package_info = f"""Package: {pkg_name}
+Version: {version}
+Architecture: {architecture}
+Filename: {file}
+Size: {file_size}
+MD5Sum: {md5sum}
+SHA256sum: {sha256sum}
+Description: Auto-generated package for {arch}
+Depends: 
+License: Unknown
+Source: {repo_url}
+SourceName: {pkg_name}
+Section: luci
+Maintainer: Auto Build
+Url: {repo_url}
+
+"""
+        packages.append(package_info)
+
+# 写入Packages文件
+with open('Packages', 'w') as f:
+    f.write('\n'.join(packages))
+
+# 创建压缩版本
+with open('Packages', 'rb') as f_in:
+    with gzip.open('Packages.gz', 'wb', compresslevel=9) as f_out:
+        f_out.write(f_in.read())
+
+print(f"Generated Packages index for {arch}")
+print(f"Repository URL: {repo_url}/releases/download/{release_name}/")
+EOF
+
+      - name: Create README for GitHub source
+        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
+        run: |
+          cd bin/packages/${{ matrix.arch }}/packages_ci
+          
+          cat > README.md << EOF
+          # OpenWrt Packages for ${{ matrix.arch }}
+          
+          This directory contains OpenWrt packages built for ${{ matrix.arch }} architecture.
+          
+          ## How to use as opkg source
+          
+          Add the following line to your OpenWrt router's \`/etc/opkg/customfeeds.conf\`:
+          
+          \`\`\`
+          src/gz custom https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/${{ github.ref_name || 'manual-build' }}
+          \`\`\`
+          
+          Or add it to \`/etc/opkg/distfeeds.conf\`:
+          
+          \`\`\`
+          src/gz custom https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/${{ github.ref_name || 'manual-build' }}/${{ matrix.arch }}
+          \`\`\`
+          
+          Then update and install:
+          
+          \`\`\`
+          opkg update
+          opkg install luci-app-gecoosac
+          \`\`\`
+          
+          ## Manual installation
+          
+          You can also manually install the .ipk files:
+          
+          \`\`\`
+          opkg install luci-app-gecoosac_*.ipk
+          \`\`\`
+          
+          ## File list
+          
+          $(ls -la *.ipk | awk '{print $9, "(" $5 " bytes)"}')
+          EOF
+
+      - name: Upload artifacts
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.arch }}
-          path: |
-            bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
-            bin/packages/${{ matrix.arch }}/packages_ci/Packages*
+          path: bin/packages/${{ matrix.arch }}/packages_ci/*
 
-  # 第二阶段：汇总产物生成OPKG标准源（与build-packages同级，2空格缩进）
-  aggregate-for-opkg:
-    name: Aggregate packages to opkg repo
-    runs-on: ubuntu-latest
-    needs: build-packages
-    if: ${{ always() && needs.build-packages.result != 'failure' }}
-    
-    steps:
-      # 1. 创建opkg源基础目录
-      - name: Create base directory structure
-        run: mkdir -p ./opkg-repo/packages
-
-      # 2. 下载所有架构的编译产物
-      - name: Download all architecture artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./opkg-repo/tmp
-          merge-multiple: false
-
-      # 3. 整理目录+生成OPKG索引（修复404+ipkg-utils问题）
-      - name: Organize repo and generate opkg indexes
-        run: |
-          # 安装必备依赖
-          sudo apt-get update && sudo apt-get install -y perl
-          
-          # 内嵌ipkg-make-index脚本（解决404）
-          cat > /usr/local/bin/ipkg-make-index << 'EOF'
-          #!/usr/bin/perl -w
-          use strict;
-          use File::Basename;
-          use POSIX;
-
-          my $packages = {};
-
-          sub md5sum {
-                  my $file = shift;
-                  open(F, $file) or return "";
-                  binmode(F);
-                  my $ctx = Digest::MD5->new;
-                  $ctx->addfile(*F);
-                  close(F);
-                  return $ctx->hexdigest;
-          }
-
-          sub parse_control {
-                  my ($file, $offset, $len) = @_;
-                  my $data = "";
-                  open(F, $file) or return undef;
-                  binmode(F);
-                  seek(F, $offset, 0);
-                  read(F, $data, $len);
-                  close(F);
-                  my $ctrl = {};
-                  my $key = undef;
-                  for my $line (split(/\n/, $data)) {
-                          $line =~ s/\r$//;
-                          if ($line =~ /^(\w+):\s*(.*)$/) {
-                                  $key = $1;
-                                  $ctrl->{$key} = $2;
-                          } elsif ($line =~ /^\s+(.*)$/ && defined($key)) {
-                                  $ctrl->{$key} .= " $1";
-                          } elsif ($line eq "") {
-                                  $key = undef;
-                          }
-                  }
-                  return $ctrl;
-          }
-
-          sub ipkg_info {
-                  my $file = shift;
-                  my $info = {};
-                  $info->{filename} = $file;
-                  if (!open(F, "$file")) {
-                          warn "Cannot open $file: $!\n";
-                          return undef;
-                  }
-                  binmode(F);
-                  my $magic;
-                  read(F, $magic, 2);
-                  if ($magic ne "PK") {
-                          close(F);
-                          warn "$file: Not an ipk file\n";
-                          return undef;
-                  }
-                  seek(F, 0, 2);
-                  my $len = tell(F);
-                  $info->{size} = $len;
-                  seek(F, 0, 0);
-                  my $ctx = Digest::MD5->new;
-                  $ctx->addfile(*F);
-                  $info->{md5sum} = $ctx->hexdigest;
-                  close(F);
-                  my @tar_cmd = ('tar', '-tf', $file);
-                  my @tar_list;
-                  for my $line (`@tar_cmd`) {
-                          chomp $line;
-                          push @tar_list, $line;
-                  }
-                  my ($control_tar_gz) = grep(/^control.tar.gz$/, @tar_list);
-                  my ($data_tar_gz) = grep(/^data.tar.gz$/, @tar_list);
-                  my $ar_info = {};
-                  open(F, "ar -tv $file |") or return undef;
-                  while (<F>) {
-                          if (/^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.*)$/) {
-                                  my $name = $6;
-                                  $ar_info->{$name} = {
-                                          offset => $4,
-                                          size => $5,
-                                  };
-                          }
-                  }
-                  close(F);
-                  if (!$control_tar_gz || !$ar_info->{$control_tar_gz}) {
-                          warn "$file: No control.tar.gz found\n";
-                          return undef;
-                  }
-                  my $ctrl_tar = $ar_info->{$control_tar_gz};
-                  my $ctrl = parse_control($file, $ctrl_tar->{offset}, $ctrl_tar->{size});
-                  return undef unless $ctrl;
-                  for my $k (keys %$ctrl) {
-                          $info->{lc($k)} = $ctrl->{$k};
-                  }
-                  $info->{package} = $ctrl->{Package} if $ctrl->{Package};
-                  $info->{version} = $ctrl->{Version} if $ctrl->{Version};
-                  $info->{architecture} = $ctrl->{Architecture} if $ctrl->{Architecture};
-                  $info->{filename} = basename($file);
-                  return $info;
-          }
-
-          eval {
-                  require Digest::MD5;
-                  Digest::Perl::MD5->import();
-                  *Digest::MD5::new = \&Digest::Perl::MD5::new;
-          };
-          if ($@) {
-                  die "MD5 support not available. Please install Digest::MD5 or Digest::Perl::MD5\n";
-          }
-
-          my $dir = shift || ".";
-          opendir(D, $dir) or die "Cannot open directory $dir: $!\n";
-          my @files = grep { /\.ipk$/ } readdir(D);
-          closedir(D);
-          for my $file (sort @files) {
-                  my $info = ipkg_info("$dir/$file");
-                  next unless $info;
-                  my $pkg = $info->{package};
-                  my $ver = $info->{version};
-                  my $arch = $info->{architecture};
-                  if ($packages->{$pkg}->{$arch}->{$ver}) {
-                          warn "Duplicate package $pkg $ver $arch\n";
-                          next;
-                  }
-                  $packages->{$pkg}->{$arch}->{$ver} = $info;
-          }
-          for my $pkg (sort keys %$packages) {
-                  for my $arch (sort keys %{$packages->{$pkg}}) {
-                          for my $ver (sort keys %{$packages->{$pkg}->{$arch}}) {
-                                  my $info = $packages->{$pkg}->{$arch}->{$ver};
-                                  print "Package: $info->{package}\n";
-                                  print "Version: $info->{version}\n";
-                                  print "Architecture: $info->{architecture}\n" if $info->{architecture};
-                                  print "Maintainer: $info->{maintainer}\n" if $info->{maintainer};
-                                  print "Depends: $info->{depends}\n" if $info->{depends};
-                                  print "Provides: $info->{provides}\n" if $info->{provides};
-                                  print "Source: $info->{source}\n" if $info->{source};
-                                  print "Section: $info->{section}\n" if $info->{section};
-                                  print "Priority: $info->{priority}\n" if $info->{priority};
-                                  print "Description: $info->{description}\n" if $info->{description};
-                                  print "Size: $info->{size}\n" if $info->{size};
-                                  print "MD5Sum: $info->{md5sum}\n" if $info->{md5sum};
-                                  print "Filename: $info->{filename}\n" if $info->{filename};
-                                  print "\n";
-                          }
-                  }
-          }
-          EOF
-
-          # 给脚本加可执行权限
-          chmod +x /usr/local/bin/ipkg-make-index
-          
-          # 遍历架构目录生成索引
-          for arch_dir in ./opkg-repo/tmp/*; do
-            if [ -d "$arch_dir" ]; then
-              arch=$(basename "$arch_dir")
-              mkdir -p ./opkg-repo/packages/$arch
-              mv $arch_dir/*.ipk ./opkg-repo/packages/$arch/ 2>/dev/null || true
-              
-              if ls ./opkg-repo/packages/$arch/*.ipk 1> /dev/null 2>&1; then
-                cd ./opkg-repo/packages/$arch
-                ipkg-make-index . > Packages
-                gzip -c Packages > Packages.gz
-                cd -
-              fi
-            fi
-          done
-        shell: /usr/bin/bash -e {0}
-
-      # 4. 上传完整OPKG源
-      - name: Upload full opkg repository
-        uses: actions/upload-artifact@v4
-        with:
-          name: opkg-repository
-          path: ./opkg-repo
-
-      # 5. 发布到GitHub Release
-      - name: Publish opkg repo to release
+      - name: Upload packages to Release (All files)
+        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         uses: ncipollo/release-action@v1
         with:
           name: ${{ github.ref_name || 'Manual Build' }}
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: true
-          replacesArtifacts: false
-          artifacts: |
-            ./opkg-repo/**/*
-            ./opkg-repo/tmp/*/*.ipk
+          replacesArtifacts: true
+          # 上传所有文件，包括 .ipk, Packages, Packages.gz, README.md
+          artifacts: "bin/packages/${{ matrix.arch }}/packages_ci/*"
           tag: ${{ github.ref_name || 'manual-build' }}
-          body: |
-            ## 📦 OPKG源使用方法（无需区分架构）
-            1. 添加源到/etc/opkg/customfeeds.conf：
-            2. 编辑opkg源配置文件：
-                vi /etc/opkg/customfeeds.conf
-            3.在文件末尾添加以下内容（直接复制，无需修改）：
-                src/gz packages_ci https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/${{ github.ref_name || 'manual-build' }}/opkg-repo/packages
-            4.保存退出（vi 编辑器按ESC→输入:wq→回车）；
-            5.更新 OPKG 缓存（必做）
-                opkg update
-            6.首次安装插件
-                opkg install luci-app-gecoosac
-            7.升级已安装的插件
-                opkg upgrade luci-app-gecoosac
-            8.验证安装 / 更新结果
-                opkg list-installed | grep luci-app-gecoosac
-            
+          
+      - name: Create combined release structure
+        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
+        run: |
+          # 创建包含所有架构的统一目录
+          mkdir -p combined_release/
+          
+          # 复制当前架构的文件到子目录
+          cp -r bin/packages/${{ matrix.arch }}/packages_ci/* combined_release/
+          
+          # 创建使用说明文件
+          cat > combined_release/USAGE.md << EOF
+          # OpenWrt Packages Repository
+          
+          ## Available architectures:
+          - ${{ matrix.arch }}
+          
+          ## Usage:
+          
+          1. **Method 1: Direct GitHub URL** (recommended)
+          
+          Add to \`/etc/opkg/customfeeds.conf\`:
+          
+          \`\`\`
+          src/gz custom https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/${{ github.ref_name || 'manual-build' }}
+          \`\`\`
+          
+          2. **Method 2: Architecture-specific URL**
+          
+          For ${{ matrix.arch }} only:
+          
+          \`\`\`
+          src/gz custom https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/${{ github.ref_name || 'manual-build' }}/${{ matrix.arch }}
+          \`\`\`
+          
+          3. **Update and install:**
+          
+          \`\`\`
+          opkg update
+          opkg install luci-app-gecoosac
+          \`\`\`
+          
+          ## Notes:
+          - Make sure your router can access GitHub
+          - Some routers may need to install \`ca-bundle\` or \`ca-certificates\` for HTTPS
+          - If HTTPS fails, try HTTP (not recommended for security):
+          \`\`\`
+          src/gz custom http://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/${{ github.ref_name || 'manual-build' }}
+          \`\`\`
+          EOF
+
+      - name: Upload combined release
+        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
+        uses: ncipollo/release-action@v1
+        with:
+          name: ${{ github.ref_name || 'Manual Build' }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
+          replacesArtifacts: false  # 不覆盖之前的文件
+          artifacts: "combined_release/*"
+          tag: ${{ github.ref_name || 'manual-build' }}
