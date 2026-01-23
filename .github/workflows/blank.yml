@@ -177,17 +177,17 @@ jobs:
           name: ${{ github.ref_name || 'Manual Build' }}
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: true
-          replacesArtifacts: false  # 改为追加模式，避免覆盖
+          replacesArtifacts: false
           artifacts: release/${{ matrix.arch }}/*
           tag: ${{ github.ref_name || 'manual-build' }}
-          omitBodyDuringUpdate: true  # 避免重复更新Release描述
+          omitBodyDuringUpdate: true
 
   create-instructions:
     name: Create Usage Instructions
     runs-on: ubuntu-latest
     needs: build
-    # 仅当build任务成功/部分成功时执行（跳过全失败场景）
-    if: ${{ needs.build.result == 'success' || needs.build.result == 'skipped' || (needs.build.result == 'failure' && needs.build.result != 'cancelled') }}
+    # 修复：简化条件表达式，符合GitHub Actions规范（去掉多余括号，统一逻辑）
+    if: ${{ needs.build.result != 'cancelled' }}
     
     steps:
       - name: Create usage instructions
@@ -198,8 +198,8 @@ jobs:
           TAG_NAME="${{ github.ref_name || 'manual-build' }}"
           REPO="${{ github.repository }}"
           
-          # 生成README.md（修复opkg源URL）
-          cat > instructions/README.md << EOF
+          # 生成README.md（修复opkg源URL，EOF顶格）
+          cat > instructions/README.md <<EOF
 # OpenWrt 软件包仓库
 本仓库提供 OpenWrt 软件包的自动构建和发布。
 
@@ -287,8 +287,8 @@ opkg upgrade luci-app-gecoosac
 本软件包基于相应开源许可证发布。
 EOF
           
-          # 生成安装脚本（修复源URL）
-          cat > instructions/INSTALL.sh << EOF
+          # 生成安装脚本（EOF顶格）
+          cat > instructions/INSTALL.sh <<EOF
 #!/bin/sh
 # OpenWrt 安装脚本
 set -e
