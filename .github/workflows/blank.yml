@@ -71,7 +71,6 @@ jobs:
 import os
 import gzip
 import hashlib
-import sys
 
 def generate_packages_index():
     packages = []
@@ -101,18 +100,14 @@ def generate_packages_index():
             # 如果解析失败，使用默认值
             package_name = basename
             version = '1.0-1'
-            architecture = '${{ matrix.arch }}'.split('_')[0] if '_' in '${{ matrix.arch }}' else '${{ matrix.arch }}'
+            architecture = os.environ.get('MATRIX_ARCH', 'unknown').split('_')[0]
         
         # GitHub Release下载URL
-        release_name = '${{ github.ref_name }}'
-        repo_owner = '${{ github.repository_owner }}'
-        repo_name = '${{ github.event.repository.name }}'
+        release_name = os.environ.get('RELEASE_NAME', 'latest')
+        repo_owner = os.environ.get('REPO_OWNER', 'unknown')
+        repo_name = os.environ.get('REPO_NAME', 'unknown')
         
-        if release_name:
-            download_url = f"https://github.com/{repo_owner}/{repo_name}/releases/download/{release_name}/{filename}"
-        else:
-            # 对于手动构建，没有标签
-            download_url = f"https://github.com/{repo_owner}/{repo_name}/releases/latest/download/{filename}"
+        download_url = f"https://github.com/{repo_owner}/{repo_name}/releases/download/{release_name}/{filename}"
         
         # 构建包信息
         package_info = f"""Package: {package_name}
@@ -150,14 +145,11 @@ if __name__ == '__main__':
     generate_packages_index()
 EOF
 
-          python3 generate_packages.py
+          RELEASE_NAME="${{ github.ref_name || 'latest' }}"
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
           
-          # 验证生成的文件
-          echo "=== 生成的文件列表 ==="
-          ls -la
-          echo ""
-          echo "=== Packages文件前10行 ==="
-          head -20 Packages || true
+          python3 generate_packages.py
 
       - name: Upload to artifacts
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
@@ -191,14 +183,38 @@ EOF
         run: |
           mkdir -p instructions
           
+          # 创建简化的README
           cat > instructions/README.md << 'EOF'
 # OpenWrt 软件包仓库
 
 本仓库提供 OpenWrt 软件包的自动构建和发布。
 
 ## 支持的架构
-
-${{ join(fromJSON('["aarch64_cortex-a53", "aarch64_cortex-a72", "aarch64_generic", "arm_arm1176jzf-s_vfp", "arm_arm926ej-s", "arm_cortex-a15_neon-vfpv4", "arm_cortex-a5_vfpv4", "arm_cortex-a7", "arm_cortex-a7_neon-vfpv4", "arm_cortex-a8_vfpv3", "arm_cortex-a9", "arm_cortex-a9_neon", "arm_cortex-a9_vfpv3-d16", "arm_fa526", "arm_xscale", "i386_pentium-mmx", "i386_pentium4", "mips64_octeonplus", "mips_24kc", "mips_4kec", "mips_mips32", "mipsel_24kc_24kf", "mipsel_74kc", "mipsel_mips32", "x86_64"]'), '、') }}
+- aarch64_cortex-a53
+- aarch64_cortex-a72
+- aarch64_generic
+- arm_arm1176jzf-s_vfp
+- arm_arm926ej-s
+- arm_cortex-a15_neon-vfpv4
+- arm_cortex-a5_vfpv4
+- arm_cortex-a7
+- arm_cortex-a7_neon-vfpv4
+- arm_cortex-a8_vfpv3
+- arm_cortex-a9
+- arm_cortex-a9_neon
+- arm_cortex-a9_vfpv3-d16
+- arm_fa526
+- arm_xscale
+- i386_pentium-mmx
+- i386_pentium4
+- mips64_octeonplus
+- mips_24kc
+- mips_4kec
+- mips_mips32
+- mipsel_24kc_24kf
+- mipsel_74kc
+- mipsel_mips32
+- x86_64
 
 ## 使用方法
 
@@ -207,8 +223,4 @@ ${{ join(fromJSON('["aarch64_cortex-a53", "aarch64_cortex-a72", "aarch64_generic
 1. 在 OpenWrt 路由器上编辑 opkg 配置文件：
 
 ```bash
-# 添加软件源（将下面的URL替换为实际地址）
 echo "src/gz myrepo https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name || 'latest' }}" >> /etc/opkg/customfeeds.conf
-
-# 或者按架构添加
-# echo "src/gz myrepo https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name || 'latest' }}/bin/packages/<你的架构>/packages_ci" >> /etc/opkg/customfeeds.conf
