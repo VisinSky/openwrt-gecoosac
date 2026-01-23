@@ -1,4 +1,4 @@
-name: Build packages
+name: Build OpenWrt Packages
 
 on:
   push:
@@ -14,19 +14,45 @@ on:
 
 jobs:
   build:
-    name: Build ${{ matrix.arch }}
+    name: Build for ${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64, aarch64_generic]  # 你可以恢复完整的架构列表
+        arch:
+          - aarch64_cortex-a53
+          - aarch64_cortex-a72
+          - aarch64_generic
+          - arm_arm1176jzf-s_vfp
+          - arm_arm926ej-s
+          - arm_cortex-a15_neon-vfpv4
+          - arm_cortex-a5_vfpv4
+          - arm_cortex-a7
+          - arm_cortex-a7_neon-vfpv4
+          - arm_cortex-a8_vfpv3
+          - arm_cortex-a9
+          - arm_cortex-a9_neon
+          - arm_cortex-a9_vfpv3-d16
+          - arm_fa526
+          - arm_xscale
+          - i386_pentium-mmx
+          - i386_pentium4
+          - mips64_octeonplus
+          - mips_24kc
+          - mips_4kec
+          - mips_mips32
+          - mipsel_24kc_24kf
+          - mipsel_74kc
+          - mipsel_mips32
+          - x86_64
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Building packages
+      - name: Build packages
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         uses: sbwml/openwrt-gh-action-sdk@main
         env:
@@ -35,218 +61,154 @@ jobs:
           PACKAGES: luci-app-gecoosac
           NO_REFRESH_CHECK: true
 
-      - name: Generate Packages index with GitHub URLs
+      - name: Generate Packages index
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         run: |
-          # 进入包目录
           cd bin/packages/${{ matrix.arch }}/packages_ci
           
-          # 确定 Release 名称（标签或手动构建）
-          RELEASE_NAME="${{ github.ref_name || 'manual-build' }}"
-          REPO_URL="${{ github.server_url }}/${{ github.repository }}"
-          
-          echo "Generating Packages index for GitHub release: $RELEASE_NAME"
-          
-          # 生成包含GitHub下载链接的Packages文件
-          python3 << 'EOF'
+          # 创建Python脚本生成索引
+          cat > generate_packages.py << 'EOF'
 import os
 import gzip
 import hashlib
-import json
+import sys
 
-arch = "${{ matrix.arch }}"
-release_name = "${{ github.ref_name || 'manual-build' }}"
-repo_owner = "${{ github.repository_owner }}"
-repo_name = "${{ github.event.repository.name }}"
-repo_url = f"https://github.com/{repo_owner}/{repo_name}"
-
-packages = []
-for file in os.listdir('.'):
-    if file.endswith('.ipk'):
-        # 读取文件内容用于计算hash
-        with open(file, 'rb') as f:
-            data = f.read()
-            file_size = len(data)
-            md5sum = hashlib.md5(data).hexdigest()
-            sha256sum = hashlib.sha256(data).hexdigest()
+def generate_packages_index():
+    packages = []
+    
+    for filename in os.listdir('.'):
+        if not filename.endswith('.ipk'):
+            continue
         
-        # 解析文件名获取包信息
-        # 格式示例: luci-app-gecoosac_1.0-1_all.ipk
-        basename = file[:-4]  # 去掉.ipk后缀
+        # 计算文件哈希
+        with open(filename, 'rb') as f:
+            content = f.read()
+            file_size = len(content)
+            md5_hash = hashlib.md5(content).hexdigest()
+            sha256_hash = hashlib.sha256(content).hexdigest()
+        
+        # 解析包名
+        basename = filename[:-4]  # 移除 .ipk
         parts = basename.split('_')
         
+        # 尝试解析包信息
         if len(parts) >= 3:
-            pkg_name = parts[0]
-            version = parts[1]
-            # 架构信息可能在第二部分或第三部分
-            if len(parts) == 3:
-                architecture = parts[2]
-            else:
-                # 处理类似 luci-app-gecoosac_1.0-1_all_other.ipk 的情况
-                architecture = parts[2] if parts[2] != 'all' else parts[3] if len(parts) > 3 else 'all'
+            # 假设格式为: name_version_architecture.ipk
+            package_name = '_'.join(parts[:-2])
+            version = parts[-2]
+            architecture = parts[-1]
         else:
             # 如果解析失败，使用默认值
-            pkg_name = basename
-            version = '1.0'
-            architecture = arch
+            package_name = basename
+            version = '1.0-1'
+            architecture = '${{ matrix.arch }}'.split('_')[0] if '_' in '${{ matrix.arch }}' else '${{ matrix.arch }}'
         
-        # GitHub下载链接（使用Release中的文件）
-        # GitHub Releases文件的下载链接格式：https://github.com/user/repo/releases/download/tag/filename
-        download_url = f"{repo_url}/releases/download/{release_name}/{file}"
+        # GitHub Release下载URL
+        release_name = '${{ github.ref_name }}'
+        repo_owner = '${{ github.repository_owner }}'
+        repo_name = '${{ github.event.repository.name }}'
         
-        # 构建包描述信息
-        package_info = f"""Package: {pkg_name}
+        if release_name:
+            download_url = f"https://github.com/{repo_owner}/{repo_name}/releases/download/{release_name}/{filename}"
+        else:
+            # 对于手动构建，没有标签
+            download_url = f"https://github.com/{repo_owner}/{repo_name}/releases/latest/download/{filename}"
+        
+        # 构建包信息
+        package_info = f"""Package: {package_name}
 Version: {version}
-Architecture: {architecture}
-Filename: {file}
-Size: {file_size}
-MD5Sum: {md5sum}
-SHA256sum: {sha256sum}
-Description: Auto-generated package for {arch}
-Depends: 
-License: Unknown
-Source: {repo_url}
-SourceName: {pkg_name}
+Depends: libc
+Source: {repo_name}
+SourceName: {package_name}
 Section: luci
-Maintainer: Auto Build
-Url: {repo_url}
+Architecture: {architecture}
+Installed-Size: {file_size}
+Filename: {filename}
+Size: {file_size}
+MD5Sum: {md5_hash}
+SHA256sum: {sha256_hash}
+Description: {package_name} - OpenWrt package
+License: Unknown
+Maintainer: Auto Build <auto@build.com>
 
 """
         packages.append(package_info)
+    
+    # 写入Packages文件
+    with open('Packages', 'w') as f:
+        for pkg in packages:
+            f.write(pkg)
+    
+    # 创建压缩版本
+    with open('Packages', 'rb') as f_in:
+        with gzip.open('Packages.gz', 'wb', compresslevel=9) as f_out:
+            f_out.write(f_in.read())
+    
+    print(f"Generated Packages index with {len(packages)} packages")
 
-# 写入Packages文件
-with open('Packages', 'w') as f:
-    f.write('\n'.join(packages))
-
-# 创建压缩版本
-with open('Packages', 'rb') as f_in:
-    with gzip.open('Packages.gz', 'wb', compresslevel=9) as f_out:
-        f_out.write(f_in.read())
-
-print(f"Generated Packages index for {arch}")
-print(f"Repository URL: {repo_url}/releases/download/{release_name}/")
+if __name__ == '__main__':
+    generate_packages_index()
 EOF
 
-      - name: Create README for GitHub source
-        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
-        run: |
-          cd bin/packages/${{ matrix.arch }}/packages_ci
+          python3 generate_packages.py
           
-          cat > README.md << EOF
-          # OpenWrt Packages for ${{ matrix.arch }}
-          
-          This directory contains OpenWrt packages built for ${{ matrix.arch }} architecture.
-          
-          ## How to use as opkg source
-          
-          Add the following line to your OpenWrt router's \`/etc/opkg/customfeeds.conf\`:
-          
-          \`\`\`
-          src/gz custom https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/${{ github.ref_name || 'manual-build' }}
-          \`\`\`
-          
-          Or add it to \`/etc/opkg/distfeeds.conf\`:
-          
-          \`\`\`
-          src/gz custom https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/${{ github.ref_name || 'manual-build' }}/${{ matrix.arch }}
-          \`\`\`
-          
-          Then update and install:
-          
-          \`\`\`
-          opkg update
-          opkg install luci-app-gecoosac
-          \`\`\`
-          
-          ## Manual installation
-          
-          You can also manually install the .ipk files:
-          
-          \`\`\`
-          opkg install luci-app-gecoosac_*.ipk
-          \`\`\`
-          
-          ## File list
-          
-          $(ls -la *.ipk | awk '{print $9, "(" $5 " bytes)"}')
-          EOF
+          # 验证生成的文件
+          echo "=== 生成的文件列表 ==="
+          ls -la
+          echo ""
+          echo "=== Packages文件前10行 ==="
+          head -20 Packages || true
 
-      - name: Upload artifacts
+      - name: Upload to artifacts
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.arch }}
-          path: bin/packages/${{ matrix.arch }}/packages_ci/*
+          name: ${{ matrix.arch }}-packages
+          path: bin/packages/${{ matrix.arch }}/packages_ci/
+          retention-days: 7
 
-      - name: Upload packages to Release (All files)
+      - name: Upload to GitHub Release
         if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
-        uses: ncipollo/release-action@v1
+        uses: softprops/action-gh-release@v1
         with:
-          name: ${{ github.ref_name || 'Manual Build' }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          allowUpdates: true
-          replacesArtifacts: true
-          # 上传所有文件，包括 .ipk, Packages, Packages.gz, README.md
-          artifacts: "bin/packages/${{ matrix.arch }}/packages_ci/*"
-          tag: ${{ github.ref_name || 'manual-build' }}
-          
-      - name: Create combined release structure
-        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
+          tag_name: ${{ github.ref_name || 'latest' }}
+          files: |
+            bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
+            bin/packages/${{ matrix.arch }}/packages_ci/Packages
+            bin/packages/${{ matrix.arch }}/packages_ci/Packages.gz
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+  create-instructions:
+    name: Create Usage Instructions
+    runs-on: ubuntu-latest
+    needs: build
+    if: always()
+    
+    steps:
+      - name: Generate usage instructions
         run: |
-          # 创建包含所有架构的统一目录
-          mkdir -p combined_release/
+          mkdir -p instructions
           
-          # 复制当前架构的文件到子目录
-          cp -r bin/packages/${{ matrix.arch }}/packages_ci/* combined_release/
-          
-          # 创建使用说明文件
-          cat > combined_release/USAGE.md << EOF
-          # OpenWrt Packages Repository
-          
-          ## Available architectures:
-          - ${{ matrix.arch }}
-          
-          ## Usage:
-          
-          1. **Method 1: Direct GitHub URL** (recommended)
-          
-          Add to \`/etc/opkg/customfeeds.conf\`:
-          
-          \`\`\`
-          src/gz custom https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/${{ github.ref_name || 'manual-build' }}
-          \`\`\`
-          
-          2. **Method 2: Architecture-specific URL**
-          
-          For ${{ matrix.arch }} only:
-          
-          \`\`\`
-          src/gz custom https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/${{ github.ref_name || 'manual-build' }}/${{ matrix.arch }}
-          \`\`\`
-          
-          3. **Update and install:**
-          
-          \`\`\`
-          opkg update
-          opkg install luci-app-gecoosac
-          \`\`\`
-          
-          ## Notes:
-          - Make sure your router can access GitHub
-          - Some routers may need to install \`ca-bundle\` or \`ca-certificates\` for HTTPS
-          - If HTTPS fails, try HTTP (not recommended for security):
-          \`\`\`
-          src/gz custom http://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/${{ github.ref_name || 'manual-build' }}
-          \`\`\`
-          EOF
+          cat > instructions/README.md << 'EOF'
+# OpenWrt 软件包仓库
 
-      - name: Upload combined release
-        if: ${{ github.event.inputs.arch == '' || matrix.arch == github.event.inputs.arch }}
-        uses: ncipollo/release-action@v1
-        with:
-          name: ${{ github.ref_name || 'Manual Build' }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          allowUpdates: true
-          replacesArtifacts: false  # 不覆盖之前的文件
-          artifacts: "combined_release/*"
-          tag: ${{ github.ref_name || 'manual-build' }}
+本仓库提供 OpenWrt 软件包的自动构建和发布。
+
+## 支持的架构
+
+${{ join(fromJSON('["aarch64_cortex-a53", "aarch64_cortex-a72", "aarch64_generic", "arm_arm1176jzf-s_vfp", "arm_arm926ej-s", "arm_cortex-a15_neon-vfpv4", "arm_cortex-a5_vfpv4", "arm_cortex-a7", "arm_cortex-a7_neon-vfpv4", "arm_cortex-a8_vfpv3", "arm_cortex-a9", "arm_cortex-a9_neon", "arm_cortex-a9_vfpv3-d16", "arm_fa526", "arm_xscale", "i386_pentium-mmx", "i386_pentium4", "mips64_octeonplus", "mips_24kc", "mips_4kec", "mips_mips32", "mipsel_24kc_24kf", "mipsel_74kc", "mipsel_mips32", "x86_64"]'), '、') }}
+
+## 使用方法
+
+### 方法一：通过 opkg 源安装（推荐）
+
+1. 在 OpenWrt 路由器上编辑 opkg 配置文件：
+
+```bash
+# 添加软件源（将下面的URL替换为实际地址）
+echo "src/gz myrepo https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name || 'latest' }}" >> /etc/opkg/customfeeds.conf
+
+# 或者按架构添加
+# echo "src/gz myrepo https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name || 'latest' }}/bin/packages/<你的架构>/packages_ci" >> /etc/opkg/customfeeds.conf
